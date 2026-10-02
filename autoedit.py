@@ -2,7 +2,7 @@
 """음식 쇼츠 자동 편집기 (ffmpeg + 파이썬 표준 라이브러리만 사용).
 
 원본 영상(들)에서 움직임(뜨기/먹기)과 소리(씹는 소리)가 큰 구간을 골라
-목표 길이(기본 90초)의 9:16 쇼츠를 만든다. 자막은 넣지 않는다.
+목표 길이(기본 60초)의 9:16 쇼츠를 만든다. 자막은 넣지 않는다.
 
 출력 (out 폴더):
   final.mp4        전체를 이어 붙인 완성본
@@ -11,7 +11,7 @@
 
 사용 예:
   python autoedit.py raw/ -o out
-  python autoedit.py a.mp4 b.mp4 --target 90 --seg 3 --fit blur
+  python autoedit.py a.mp4 b.mp4 --target 60 --seg 3 --fit blur
 """
 import argparse
 import csv
@@ -152,7 +152,7 @@ def main():
     ap = argparse.ArgumentParser(description="음식 쇼츠 자동 편집기")
     ap.add_argument("inputs", nargs="+", help="영상 파일 또는 폴더")
     ap.add_argument("-o", "--out", default="out")
-    ap.add_argument("--target", type=float, default=90.0, help="목표 길이(초), 기본 90")
+    ap.add_argument("--target", type=float, default=60.0, help="목표 길이(초), 기본 60")
     ap.add_argument("--seg", type=float, default=3.0, help="컷 한 개 길이(초), 기본 3")
     ap.add_argument("--fit", choices=["crop", "blur"], default="crop",
                     help="crop: 가운데 확대 크롭 / blur: 흐린 배경 위에 전체 화면")
