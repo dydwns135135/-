@@ -18,6 +18,7 @@ import csv
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".m4v", ".webm"}
@@ -151,7 +152,7 @@ def render_clip(src, start, length, dst, fit, focus, w, h, fps, with_audio):
 def main():
     ap = argparse.ArgumentParser(description="음식 쇼츠 자동 편집기")
     ap.add_argument("inputs", nargs="+", help="영상 파일 또는 폴더")
-    ap.add_argument("-o", "--out", default="out")
+    ap.add_argument("-o", "--out", default=None, help="출력 폴더 (기본: out_날짜시간, 이전 결과를 덮어쓰지 않음)")
     ap.add_argument("--target", type=float, default=60.0, help="목표 길이(초), 기본 60")
     ap.add_argument("--seg", type=float, default=3.0, help="컷 한 개 길이(초), 기본 3")
     ap.add_argument("--fit", choices=["crop", "blur"], default="crop",
@@ -189,7 +190,7 @@ def main():
             print(f"  {p.name} {s:6.1f}s")
         return
 
-    out = Path(args.out)
+    out = Path(args.out or time.strftime("out_%Y%m%d_%H%M%S"))
     clips = out / "clips"
     clips.mkdir(parents=True, exist_ok=True)
     rows, listing = [], []

@@ -3,3 +3,4 @@ raw/
 *.mp4
 *.mov
 __pycache__/
+out_*/
