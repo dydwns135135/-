@@ -8,6 +8,7 @@ import argparse
 import logging
 import os
 
+from . import notify
 from .broker import Broker
 from .risk import RiskLimits, RiskManager
 from .strategy import StrategyParams, latest_signal
@@ -15,7 +16,8 @@ from .strategy import StrategyParams, latest_signal
 log = logging.getLogger("trader")
 
 
-def run_once(broker: Broker, symbols: list[str], risk: RiskManager, params: StrategyParams = StrategyParams()) -> None:
+def run_once(broker: Broker, symbols: list[str], risk: RiskManager, params: StrategyParams = StrategyParams()) -> list[str]:
+    notes: list[str] = []
     positions = broker.positions()
     prices = {s: broker.price(s) for s in set(symbols) | set(positions)}
     held_value = sum(p.qty * prices[s] for s, p in positions.items())
@@ -29,6 +31,7 @@ def run_once(broker: Broker, symbols: list[str], risk: RiskManager, params: Stra
 
         if pos and (sig == "sell" or risk.stop_hit(pos.avg_cost, px)):
             log.info("%s 청산 신호(신호=%s)", sym, sig)
+            notes.append(f"🔴 매도 {sym} x{pos.qty} @ {px:.2f} (신호={sig})")
             broker.sell(sym, pos.qty, px)
             cash += pos.qty * px
             held_value -= pos.qty * px
@@ -37,13 +40,16 @@ def run_once(broker: Broker, symbols: list[str], risk: RiskManager, params: Stra
             qty = risk.buy_qty(px, equity, cash, held_value, len(positions))
             if qty > 0:
                 broker.buy(sym, qty, px)
+                notes.append(f"🟢 매수 {sym} x{qty} @ {px:.2f}")
                 cash -= qty * px
                 held_value += qty * px
                 positions[sym] = None  # 보유 종목 수 집계용
             else:
                 log.info("%s 매수 신호지만 리스크 한도로 보류", sym)
+                notes.append(f"⚪ {sym} 매수 신호, 리스크 한도로 보류")
         else:
             log.info("%s %s (보유 %s)", sym, sig, "O" if pos else "X")
+    return notes
 
 
 def main() -> None:
@@ -67,7 +73,13 @@ def main() -> None:
 
         broker = PaperBroker(real)
         log.info("모의 모드 (주문 전송 안 함)")
-    run_once(broker, a.symbols, RiskManager(RiskLimits(), a.state))
+    mode = "실거래" if a.live else "모의"
+    try:
+        notes = run_once(broker, a.symbols, RiskManager(RiskLimits(), a.state))
+    except Exception as e:  # 장애도 휴대폰으로 알린다
+        notify.send(f"❌ 자동매매 오류 [{mode}]: {type(e).__name__}: {e}")
+        raise
+    notify.send(f"📈 자동매매 [{mode}] {', '.join(a.symbols)}\n" + ("\n".join(notes) or "거래 없음"))
 
 
 if __name__ == "__main__":
