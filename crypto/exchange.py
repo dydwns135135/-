@@ -12,9 +12,21 @@ import ccxt
 import pandas as pd
 
 
+def demo_symbol(symbol: str) -> str:
+    """Bitget 데모 거래는 S 접두 종목/증거금(SBTCSUSDT, SUSDT)을 쓴다: BTC/USDT:USDT → SBTC/SUSDT:SUSDT."""
+    pair, _, settle = symbol.partition(":")
+    base, _, quote = pair.partition("/")
+    if base.startswith("S") and quote.startswith("S"):
+        return symbol  # 이미 데모 종목
+    return f"S{base}/S{quote}:S{settle or quote}"
+
+
 class BitgetFutures:
-    def __init__(self, ex: ccxt.Exchange, symbol: str, leverage: int):
+    def __init__(self, ex: ccxt.Exchange, symbol: str, leverage: int,
+                 data_symbol: str | None = None, demo: bool = False):
+        """symbol: 주문 종목(데모면 SBTC/SUSDT:SUSDT), data_symbol: 시세/캔들용 실제 종목."""
         self.ex, self.symbol, self.leverage = ex, symbol, leverage
+        self.data_symbol, self.demo = data_symbol or symbol, demo
         self.setup_errors: list[str] = []  # 격리마진/레버리지 설정 실패 기록(진단용)
         self.hedged: bool | None = None  # 계좌 포지션 모드: 주문이 성공한 방식으로 학습(None=아직 모름)
         ex.load_markets()
@@ -29,20 +41,27 @@ class BitgetFutures:
             "enableRateLimit": True,
         })
         if demo:
-            ex.set_sandbox_mode(True)  # TODO(verify): 데모 전용 API 키 필요, 심볼은 SBTC/SUSDT:SUSDT 형태일 수 있음
+            # 데모는 일반 선물(classic) API + 데모 종목(SBTC/SUSDT) + SUSDT 증거금으로 동작(UTA 자동감지 끔).
+            ex.options["uta"] = False
+            ex.set_sandbox_mode(True)  # TODO(verify)
+            return cls(ex, demo_symbol(symbol), leverage, data_symbol=symbol, demo=True)
         return cls(ex, symbol, leverage)
 
     def closed_candles(self, timeframe: str, limit: int = 300) -> pd.DataFrame:
-        rows = self.ex.fetch_ohlcv(self.symbol, timeframe, limit=limit)
+        rows = self.ex.fetch_ohlcv(self.data_symbol, timeframe, limit=limit)
         df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "volume"])
         df.index = pd.to_datetime(df.pop("ts"), unit="ms", utc=True)
         return df.iloc[:-1][["open", "high", "low", "close"]]  # 마지막은 진행 중인 봉이라 제외
 
     def price(self) -> float:
-        return float(self.ex.fetch_ticker(self.symbol)["last"])
+        return float(self.ex.fetch_ticker(self.data_symbol)["last"])
+
+    def _bal_params(self) -> tuple[dict, str]:
+        return ({"productType": "SUSDT-FUTURES"}, "SUSDT") if self.demo else ({}, "USDT")
 
     def balance(self) -> float:
-        return float(self.ex.fetch_balance()["USDT"]["total"])
+        params, coin = self._bal_params()
+        return float(self.ex.fetch_balance(params)[coin]["total"])
 
     def position(self) -> dict | None:
         """{'side': 'long'|'short', 'contracts': float, 'entry': float} 또는 None."""
@@ -58,6 +77,8 @@ class BitgetFutures:
                 fn(arg, self.symbol)
             except ccxt.BaseError as e:  # 이미 같은 값이면 오류가 날 수 있음 → 기록만 하고 진행
                 self.setup_errors.append(f"{fn.__name__}: {str(e)[:160]}")
+                if not self.demo and "40014" in str(e):  # 실거래에서 권한 부족이면 격리/레버리지 미설정 상태로 주문하지 않는다
+                    raise
         amt = float(self.ex.amount_to_precision(self.symbol, amount))
         self._order(side, amt, {"stopLoss": {"triggerPrice": stop_price}})  # TODO(verify)
 
@@ -106,10 +127,11 @@ class BitgetFutures:
         try:
             out["settle"] = self.ex.market(self.symbol).get("settle")
             out["demo_symbols(SBTC*)"] = [s for s in self.ex.markets if s.startswith("SBTC")][:3]
+            out["data_symbol"], out["demo"] = self.data_symbol, self.demo
         except ccxt.BaseError as e:
             out["market"] = f"조회 실패: {type(e).__name__}"
         try:
-            total = self.ex.fetch_balance().get("total") or {}
+            total = self.ex.fetch_balance(self._bal_params()[0]).get("total") or {}
             out["balances"] = {k: v for k, v in total.items() if v}
         except ccxt.BaseError as e:
             out["balances"] = f"조회 실패: {type(e).__name__}: {str(e)[:120]}"

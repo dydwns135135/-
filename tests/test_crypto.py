@@ -138,3 +138,48 @@ def test_test_open_logs_diagnosis_on_failure(caplog):
     with caplog.at_level("ERROR", logger="crypto"), pytest.raises(RuntimeError):
         test_open(B(synthetic_prices(300)), FuturesConfig())
     assert "SUSDT" in caplog.text and "Insufficient" in caplog.text
+
+
+def test_demo_symbol_mapping():
+    from crypto.exchange import demo_symbol
+    assert demo_symbol("BTC/USDT:USDT") == "SBTC/SUSDT:SUSDT"
+    assert demo_symbol("ETH/USDT:USDT") == "SETH/SUSDT:SUSDT"
+    assert demo_symbol("SBTC/SUSDT:SUSDT") == "SBTC/SUSDT:SUSDT"
+
+
+def test_demo_uses_susdt_balance_and_real_data_symbol():
+    from crypto.exchange import BitgetFutures
+
+    class Ex:
+        def __init__(self): self.t = []
+        def load_markets(self): pass
+        def fetch_balance(self, params=None):
+            self.t.append(("bal", params)); return {"SUSDT": {"total": 10000.0}, "USDT": {"total": 0}}
+        def fetch_ticker(self, sym): self.t.append(("tick", sym)); return {"last": 100.0}
+
+    ex = Ex()
+    b = BitgetFutures(ex, "SBTC/SUSDT:SUSDT", 2, data_symbol="BTC/USDT:USDT", demo=True)
+    assert b.balance() == 10000.0 and b.price() == 100.0
+    assert ex.t == [("bal", {"productType": "SUSDT-FUTURES"}), ("tick", "BTC/USDT:USDT")]
+
+
+def test_live_aborts_on_permission_error_but_demo_continues():
+    import ccxt
+    import pytest
+    from crypto.exchange import BitgetFutures
+
+    class Ex:
+        def __init__(self): self.orders = 0
+        def load_markets(self): pass
+        def amount_to_precision(self, s, a): return a
+        def set_margin_mode(self, *a): raise ccxt.ExchangeError('{"code":"40014","msg":"need future pos write permissions"}')
+        def set_leverage(self, *a): pass
+        def create_order(self, *a, **k): self.orders += 1; return {}
+
+    live = BitgetFutures(Ex(), "BTC/USDT:USDT", 2)
+    with pytest.raises(ccxt.ExchangeError):
+        live.open("buy", 0.001, 1.0)
+    assert live.ex.orders == 0
+    demo = BitgetFutures(Ex(), "SBTC/SUSDT:SUSDT", 2, demo=True)
+    demo.open("buy", 0.001, 1.0)
+    assert demo.ex.orders == 1 and demo.setup_errors
