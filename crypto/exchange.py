@@ -12,20 +12,6 @@ import ccxt
 import pandas as pd
 
 
-def resolve_demo_symbol(ex: ccxt.Exchange, symbol: str) -> str:
-    """실제 종목(BTC/USDT:USDT)에 대응하는 데모 종목의 ccxt 심볼을 찾는다.
-    Bitget 데모 종목 ID 는 S+기초자산+S+견적자산(SBTCSUSDT). ccxt 가 이를 어떤 심볼 문자열로
-    등록하는지는 거래소 응답에 달려 있으므로 이름을 추측하지 않고 ID 로 조회한다."""
-    m = ex.market(symbol)
-    demo_id = f"S{m['baseId']}S{m['quoteId']}"
-    found = (getattr(ex, "markets_by_id", None) or {}).get(demo_id)
-    if found:
-        return found[0]["symbol"]
-    demo_like = sorted(x["symbol"] for x in ex.markets.values()
-                       if str(x.get("settle", "")).startswith("S") or str(x.get("id", "")).startswith("S"))[:8]
-    raise RuntimeError(f"데모 종목 {demo_id} 를 거래소 종목 목록에서 찾지 못함. 'S' 계열 종목 예: {demo_like}")
-
-
 def configure_demo(ex: ccxt.Exchange) -> None:
     """데모(모의) 거래 설정. ccxt 는 S 접두 상품(SUSDT-FUTURES) 요청에는 PAPTRADING 헤더를 빼지만
     Bitget 은 데모 키 요청에 항상 이 헤더를 요구한다(없으면 40099 exchange environment is incorrect)."""
@@ -56,9 +42,7 @@ class BitgetFutures:
         if demo:
             # 데모는 일반 선물(classic) API + 데모 종목(SBTC/SUSDT) + SUSDT 증거금으로 동작(UTA 자동감지 끔).
             configure_demo(ex)
-            b = cls(ex, symbol, leverage, data_symbol=symbol, demo=True)  # 종목 목록을 불러온 뒤
-            b.symbol = resolve_demo_symbol(ex, symbol)  # 데모 종목 심볼로 교체
-            return b
+            return BitgetDemoFutures(ex, symbol, leverage)
         return cls(ex, symbol, leverage)
 
     def closed_candles(self, timeframe: str, limit: int = 300) -> pd.DataFrame:
@@ -156,3 +140,128 @@ class BitgetFutures:
     def close(self, side: str, contracts: float) -> None:
         opp = "sell" if side == "long" else "buy"
         self._order(opp, contracts, {"reduceOnly": True})
+
+
+DEMO_PT, DEMO_COIN = "SUSDT-FUTURES", "SUSDT"
+
+
+class BitgetDemoFutures:
+    """Bitget 데모(모의) 선물. ccxt 종목 목록에는 데모 종목(SBTCSUSDT)이 등록되지 않아(run #8 로그)
+    통합 심볼 대신 Bitget v2 mix REST 를 ccxt 의 직접 호출 메서드로 부른다.
+    시세/캔들은 실제 BTC/USDT:USDT 를 ccxt 로 가져온다. 주문 종목 ID = S + 기초자산 + SUSDT.
+
+    !! 미검증 !!  요청 파라미터·응답 필드는 Bitget v2 문서 기준 추정이며 데모에서 확인 중이다."""
+
+    def __init__(self, ex: ccxt.Exchange, data_symbol: str, leverage: int):
+        self.ex, self.data_symbol, self.leverage = ex, data_symbol, leverage
+        self.hedged: bool | None = None
+        self.setup_errors: list[str] = []
+        self.demo = True
+        ex.load_markets()
+        self.market_id = "S" + ex.market(data_symbol)["baseId"] + DEMO_COIN  # 예: SBTCSUSDT
+        self._base = {"symbol": self.market_id, "productType": DEMO_PT, "marginCoin": DEMO_COIN}
+
+    # --- 시세 (실제 시장, ccxt 통합 API) ---
+    def closed_candles(self, timeframe: str, limit: int = 300) -> pd.DataFrame:
+        rows = self.ex.fetch_ohlcv(self.data_symbol, timeframe, limit=limit)
+        df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "volume"])
+        df.index = pd.to_datetime(df.pop("ts"), unit="ms", utc=True)
+        return df.iloc[:-1][["open", "high", "low", "close"]]
+
+    def price(self) -> float:
+        return float(self.ex.fetch_ticker(self.data_symbol)["last"])
+
+    # --- 계좌/포지션 (데모, 직접 호출) ---
+    def balance(self) -> float:
+        r = self.ex.privateMixGetV2MixAccountAccounts({"productType": DEMO_PT})
+        for a in r.get("data") or []:
+            if a.get("marginCoin") == DEMO_COIN:
+                return float(a.get("accountEquity") or a.get("available") or 0)
+        return 0.0
+
+    def position(self) -> dict | None:
+        r = self.ex.privateMixGetV2MixPositionAllPosition({"productType": DEMO_PT, "marginCoin": DEMO_COIN})
+        for p in r.get("data") or []:
+            if p.get("symbol") == self.market_id and float(p.get("total") or 0) > 0:
+                return {"side": p["holdSide"], "contracts": float(p["total"]), "entry": float(p.get("openPriceAvg") or 0)}
+        return None
+
+    def test_amount(self, min_notional: float = 7.0) -> float:
+        import math
+        m = self.ex.market(self.data_symbol)
+        step = float(m["limits"]["amount"]["min"] or 0.001)
+        return round(math.ceil(min_notional / (self.price() * step)) * step, 8)
+
+    def _size(self, amount: float) -> str:
+        return str(self.ex.amount_to_precision(self.data_symbol, amount))
+
+    def _setup(self) -> None:
+        calls = (
+            ("set_position_mode", self.ex.privateMixPostV2MixAccountSetPositionMode,
+             {"productType": DEMO_PT, "posMode": "one_way_mode"}),
+            ("set_margin_mode", self.ex.privateMixPostV2MixAccountSetMarginMode,
+             {**self._base, "marginMode": "isolated"}),
+            ("set_leverage", self.ex.privateMixPostV2MixAccountSetLeverage,
+             {**self._base, "leverage": str(self.leverage)}),
+        )
+        for name, fn, params in calls:
+            try:
+                fn(params)
+            except ccxt.BaseError as e:  # 이미 같은 값/포지션 보유 중이면 거부될 수 있음 → 기록만
+                self.setup_errors.append(f"{name}: {str(e)[:160]}")
+
+    def _place(self, side: str, size: str, extra: dict) -> dict:
+        """단방향으로 먼저 시도, 포지션 모드 불일치 오류(40774/25236)면 헤지 방식(tradeSide)으로 재시도."""
+        body = {**self._base, "marginMode": "isolated", "side": side, "orderType": "market", "size": size, **extra}
+        modes = [self.hedged] if self.hedged is not None else [False, True]
+        err: Exception | None = None
+        for hedged in modes:
+            b = dict(body)
+            if hedged:
+                b["tradeSide"] = "close" if b.pop("reduceOnly", None) else "open"
+                if b["tradeSide"] == "close":  # 헤지 청산: side 는 청산할 포지션의 방향
+                    b["side"] = "buy" if side == "sell" else "sell"
+            try:
+                r = self.ex.privateMixPostV2MixOrderPlaceOrder(b)
+                self.hedged = hedged
+                return r
+            except ccxt.ExchangeError as e:
+                if not any(c in str(e) for c in ("40774", "25236")):
+                    raise
+                err = e
+        raise err  # type: ignore[misc]
+
+    def open(self, side: str, amount: float, stop_price: float) -> None:
+        self._setup()
+        self._place(side, self._size(amount), {"presetStopLossPrice": str(self.ex.price_to_precision(self.data_symbol, stop_price))})
+
+    def close(self, side: str, contracts: float) -> None:
+        opp = "sell" if side == "long" else "buy"
+        self._place(opp, self._size(contracts), {"reduceOnly": "YES"})
+
+    # --- 진단 ---
+    def stop_info(self) -> dict:
+        out: dict = {}
+        try:
+            r = self.ex.privateMixGetV2MixOrderOrdersPlanPending(
+                {"productType": DEMO_PT, "planType": "profit_loss", "symbol": self.market_id})
+            d = r.get("data") or {}
+            rows = d.get("entrustedList") if isinstance(d, dict) else d
+            out["plan_orders"] = [{k: o.get(k) for k in ("orderId", "planType", "side", "size", "triggerPrice", "triggerType")}
+                                  for o in (rows or [])]
+        except ccxt.BaseError as e:
+            out["plan_orders"] = f"조회 실패: {type(e).__name__}: {str(e)[:120]}"
+        return out
+
+    def diagnose(self) -> dict:
+        out: dict = {"market_id": self.market_id, "hedged": self.hedged, "setup_errors": self.setup_errors}
+        try:
+            c = self.ex.publicMixGetV2MixMarketContracts({"productType": DEMO_PT, "symbol": self.market_id})
+            out["contract"] = (c.get("data") or [{}])[0].get("symbol") if c.get("data") else "없음(빈 목록)"
+        except ccxt.BaseError as e:
+            out["contract"] = f"조회 실패: {type(e).__name__}: {str(e)[:120]}"
+        try:
+            out["balance"] = self.balance()
+        except ccxt.BaseError as e:
+            out["balance"] = f"조회 실패: {type(e).__name__}: {str(e)[:120]}"
+        return out
