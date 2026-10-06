@@ -41,12 +41,12 @@ def fetch_history(ex, symbol: str, timeframe: str = "4h", years: float = 4.0, li
     return df.iloc[:-1][["open", "high", "low", "close"]]  # 마지막은 진행 중인 봉
 
 
-def load_data(years: float, symbol: str = "BTC/USDT:USDT", min_bars: int = 2000):
+def load_data(years: float, symbol: str = "BTC/USDT:USDT", min_bars: int = 2000, timeframe: str = "4h"):
     last_err = None
     for ex_id in ("bitget", "okx"):
         try:
             ex = getattr(ccxt, ex_id)({"enableRateLimit": True, "options": {"defaultType": "swap"}})
-            df = fetch_history(ex, symbol, years=years)
+            df = fetch_history(ex, symbol, timeframe=timeframe, years=years)
             if len(df) >= min_bars:
                 return ex_id, df
             last_err = f"{ex_id}: 봉 {len(df)}개뿐"
