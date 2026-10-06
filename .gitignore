@@ -4,3 +4,5 @@ raw/
 *.mov
 __pycache__/
 out_*/
+state.json
+.env

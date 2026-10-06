@@ -1,0 +1,53 @@
+name: trader
+
+on:
+  schedule:
+    # 평일 21:30 UTC = 미국 정규장 마감(서머타임 20:00 / 표준시 21:00 UTC) 이후
+    - cron: "30 21 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      live:
+        description: "실거래로 실행 (기본: 모의)"
+        type: boolean
+        default: false
+
+concurrency: trader   # 동시 실행 방지
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-trader.txt
+      - run: pip install -r requirements-trader.txt
+
+      # 일일 손실 한도 기준선(state.json)을 실행 사이에 보존
+      - uses: actions/cache@v4
+        with:
+          path: state.json
+          key: trader-state-${{ github.run_id }}
+          restore-keys: trader-state-
+
+      - name: Run
+        env:
+          TOSS_CLIENT_ID: ${{ secrets.TOSS_CLIENT_ID }}
+          TOSS_CLIENT_SECRET: ${{ secrets.TOSS_CLIENT_SECRET }}
+          TOSS_ACCOUNT: ${{ secrets.TOSS_ACCOUNT }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # 저장소 변수 TRADER_SYMBOLS (예: "AAPL MSFT NVDA")
+          SYMBOLS: ${{ vars.TRADER_SYMBOLS }}
+          # 실거래는 수동 실행에서 live 체크했거나, 저장소 변수 TRADER_LIVE=true 일 때만
+          LIVE: ${{ (github.event.inputs.live == 'true' || vars.TRADER_LIVE == 'true') && 'yes' || '' }}
+        run: |
+          if [ -z "$SYMBOLS" ]; then echo "저장소 변수 TRADER_SYMBOLS 를 설정하세요"; exit 1; fi
+          if [ -n "$LIVE" ]; then
+            TRADER_CONFIRM_LIVE=yes python -m trader $SYMBOLS --live
+          else
+            python -m trader $SYMBOLS
+          fi

@@ -1,0 +1,47 @@
+name: crypto-futures
+
+on:
+  schedule:
+    # 4시간봉 마감(00,04,08,... UTC) 직후. 스케줄이 지연될 수 있어 손절은 거래소 주문으로 걸어둔다.
+    - cron: "7 */4 * * *"
+  workflow_dispatch:
+    inputs:
+      live:
+        description: "실거래로 실행 (기본: 데모)"
+        type: boolean
+        default: false
+
+concurrency: crypto-futures
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-trader.txt
+      - run: pip install -r requirements-trader.txt
+      - name: Run
+        env:
+          BITGET_API_KEY: ${{ secrets.BITGET_API_KEY }}
+          BITGET_API_SECRET: ${{ secrets.BITGET_API_SECRET }}
+          BITGET_API_PASSPHRASE: ${{ secrets.BITGET_API_PASSPHRASE }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # 저장소 변수(선택): CRYPTO_SYMBOL, CRYPTO_LEVERAGE, CRYPTO_ENABLED
+          SYMBOL: ${{ vars.CRYPTO_SYMBOL || 'BTC/USDT:USDT' }}
+          LEVERAGE: ${{ vars.CRYPTO_LEVERAGE || '2' }}
+          ENABLED: ${{ vars.CRYPTO_ENABLED }}
+          LIVE: ${{ (github.event.inputs.live == 'true' || vars.CRYPTO_LIVE == 'true') && 'yes' || '' }}
+        run: |
+          # 스케줄 실행은 저장소 변수 CRYPTO_ENABLED=true 일 때만 (수동 실행은 항상 가능)
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$ENABLED" != "true" ]; then echo "CRYPTO_ENABLED!=true, 건너뜀"; exit 0; fi
+          if [ -n "$LIVE" ]; then
+            CRYPTO_CONFIRM_LIVE=yes python -m crypto --symbol "$SYMBOL" --leverage "$LEVERAGE" --live
+          else
+            python -m crypto --symbol "$SYMBOL" --leverage "$LEVERAGE"
+          fi
