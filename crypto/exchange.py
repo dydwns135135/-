@@ -15,6 +15,7 @@ import pandas as pd
 class BitgetFutures:
     def __init__(self, ex: ccxt.Exchange, symbol: str, leverage: int):
         self.ex, self.symbol, self.leverage = ex, symbol, leverage
+        self.setup_errors: list[str] = []  # 격리마진/레버리지 설정 실패 기록(진단용)
         self.hedged: bool | None = None  # 계좌 포지션 모드: 주문이 성공한 방식으로 학습(None=아직 모름)
         ex.load_markets()
 
@@ -55,8 +56,8 @@ class BitgetFutures:
         for fn, arg in ((self.ex.set_margin_mode, "isolated"), (self.ex.set_leverage, self.leverage)):
             try:
                 fn(arg, self.symbol)
-            except ccxt.BaseError:
-                pass  # 이미 같은 값이면 오류가 날 수 있음
+            except ccxt.BaseError as e:  # 이미 같은 값이면 오류가 날 수 있음 → 기록만 하고 진행
+                self.setup_errors.append(f"{fn.__name__}: {str(e)[:160]}")
         amt = float(self.ex.amount_to_precision(self.symbol, amount))
         self._order(side, amt, {"stopLoss": {"triggerPrice": stop_price}})  # TODO(verify)
 
@@ -97,6 +98,22 @@ class BitgetFutures:
         for p in self.ex.fetch_positions([self.symbol]):
             if float(p.get("contracts") or 0) > 0:
                 out["position_stop"] = {k: v for k, v in (p.get("info") or {}).items() if "stop" in k.lower() or "sl" == k.lower()[:2]}
+        return out
+
+    def diagnose(self) -> dict:
+        """주문 실패 시 원인 파악용: 잔고, 데모 종목 존재 여부, 설정 오류."""
+        out: dict = {"symbol": self.symbol, "leverage": self.leverage, "hedged": self.hedged}
+        try:
+            out["settle"] = self.ex.market(self.symbol).get("settle")
+            out["demo_symbols(SBTC*)"] = [s for s in self.ex.markets if s.startswith("SBTC")][:3]
+        except ccxt.BaseError as e:
+            out["market"] = f"조회 실패: {type(e).__name__}"
+        try:
+            total = self.ex.fetch_balance().get("total") or {}
+            out["balances"] = {k: v for k, v in total.items() if v}
+        except ccxt.BaseError as e:
+            out["balances"] = f"조회 실패: {type(e).__name__}: {str(e)[:120]}"
+        out["setup_errors"] = self.setup_errors
         return out
 
     def close(self, side: str, contracts: float) -> None:
