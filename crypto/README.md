@@ -22,3 +22,11 @@ Bitget API 키는 **거래 권한만** 주고 출금 권한은 끄고, 가능하
 - Secrets: `BITGET_API_KEY`, `BITGET_API_SECRET`, `BITGET_API_PASSPHRASE` (+ 기존 텔레그램)
 - Variables: `CRYPTO_ENABLED=true`(스케줄 켜기), 선택 `CRYPTO_SYMBOL`, `CRYPTO_LEVERAGE`, `CRYPTO_LIVE=true`(실거래, 기본 없음)
 - 먼저 Actions 탭에서 수동 실행(데모)으로 확인.
+
+## 현재 권장 경로: 일봉 모멘텀(롱만, 1배) — 데모 전용
+일목/볼린저 4시간봉 전략은 실제 BTC 데이터에서 손실이라 폐기(수동 실행만 남김). 대표 규칙 비교(`crypto-strategy-compare`)에서
+가장 나았던 **90일 모멘텀 롱만**을 데모에서 검증한다.
+- 규칙: 마감 종가 > 90일 전 종가 → 롱 보유, 아니면 현금. 레버리지 1배, 잔고의 50%(`MOMENTUM_ALLOC`). 손절 없음(백테스트와 동일, `--stop-loss`로 선택 가능).
+- 검증: `crypto-momentum-sensitivity` 워크플로로 30~250일 이웃 값에서도 비슷한지 확인.
+- 실행: `crypto-momentum` 워크플로(데모 전용, 매일 UTC 00:15). 스케줄은 저장소 변수 `MOMENTUM_ENABLED=true` 일 때만.
+- 이 결과는 과거 BTC 상승장 데이터 기반이며 수익을 보장하지 않는다. 낙폭이 -50%대였던 구간이 있다.
