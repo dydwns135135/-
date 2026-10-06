@@ -199,3 +199,35 @@ def test_run_report_shape_and_sharpe():
     assert len(rep) == 12 and set(rep["구간"]) == {"전체", "앞60%", "뒤40%"}
     assert "롱+숏 x2" in fmt(rep)
     assert sharpe(pd.Series([100, 101, 100.5, 102.0, 101.0])) == sharpe(pd.Series([100, 101, 100.5, 102.0, 101.0]))
+
+
+def test_strategies_causal_and_in_range():
+    """신호는 과거만 사용: 미래 데이터를 바꿔도 과거 신호가 변하지 않고, 값은 {-1,0,1}."""
+    from crypto import strategies as S
+
+    df = synthetic_prices(900, seed=11, vol=0.02)
+    df2 = df.copy()
+    df2.iloc[700:] *= 2
+    for fn in (S.sma_cross, S.momentum, S.donchian, S.rsi_revert):
+        a, b = fn(df), fn(df2)
+        pd.testing.assert_series_equal(a.iloc[:700], b.iloc[:700], check_names=False)
+        assert set(a.unique()) <= {-1.0, 0.0, 1.0}
+
+
+def test_simulate_buy_hold_matches_open_to_open_and_costs():
+    from crypto import strategies as S
+
+    df = synthetic_prices(300, seed=2, vol=0.01)
+    pnl = S.simulate(df, S.buy_hold(df), fee=0, slip=0, funding_per_8h=0)
+    exp = df["open"].iloc[-1] / df["open"].iloc[1] - 1  # 첫 진입은 2번째 봉 시가, 마지막 시가까지 보유
+    assert abs((1 + pnl).prod() - 1 - exp) < 1e-9
+    costly = S.simulate(df, S.buy_hold(df))
+    assert (1 + costly).prod() < (1 + pnl).prod()  # 비용이 수익을 깎는다
+
+
+def test_strategy_compare_shape_and_verdict():
+    from crypto.strategy_compare import compare, fmt, verdict
+
+    rep = compare(synthetic_prices(1500, seed=5, vol=0.015))
+    assert len(rep) == 30 and set(rep["구간"]) == {"전체", "앞60%", "뒤40%"}
+    assert "SMA롱만+변동성타깃" in fmt(rep) and len(verdict(rep)) == 10
