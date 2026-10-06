@@ -171,3 +171,31 @@ def test_demo_always_sends_paptrading_header_even_for_susdt_products():
     assert ex.options["uta"] is True  # 데모 계정은 통합 계정(UTA)
     # 실제 요청 직전에 합쳐지는 헤더 (S 상품 요청이라 ccxt 가 자체 헤더를 빼도 남아야 함)
     assert ex.prepare_request_headers({})["PAPTRADING"] == "1"
+
+
+def test_fetch_history_paginates_and_drops_unfinished_bar():
+    from crypto.backtest_report import fetch_history
+
+    step = 4 * 3600 * 1000
+    t0 = 1_600_000_000_000
+    allrows = [[t0 + i * step, 1, 2, 0.5, 1.5, 10] for i in range(450)]
+
+    class Ex:
+        calls = 0
+        def fetch_ohlcv(self, sym, tf, since=None, limit=200):
+            Ex.calls += 1
+            return [r for r in allrows if r[0] >= since][:limit]
+
+    df = fetch_history(Ex(), "BTC/USDT:USDT", years=100)
+    assert len(df) == 449 and Ex.calls >= 3          # 200+200+50 → 마지막(진행 중) 봉 제외
+    assert df.index.is_monotonic_increasing and not df.index.duplicated().any()
+
+
+def test_run_report_shape_and_sharpe():
+    from crypto.backtest_report import fmt, run_report, sharpe
+
+    df = synthetic_prices(3000, seed=4, vol=0.01)
+    rep = run_report(df)
+    assert len(rep) == 12 and set(rep["구간"]) == {"전체", "앞60%", "뒤40%"}
+    assert "롱+숏 x2" in fmt(rep)
+    assert sharpe(pd.Series([100, 101, 100.5, 102.0, 101.0])) == sharpe(pd.Series([100, 101, 100.5, 102.0, 101.0]))
