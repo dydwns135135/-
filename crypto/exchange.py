@@ -12,13 +12,18 @@ import ccxt
 import pandas as pd
 
 
-def demo_symbol(symbol: str) -> str:
-    """Bitget 데모 거래는 S 접두 종목/증거금(SBTCSUSDT, SUSDT)을 쓴다: BTC/USDT:USDT → SBTC/SUSDT:SUSDT."""
-    pair, _, settle = symbol.partition(":")
-    base, _, quote = pair.partition("/")
-    if base.startswith("S") and quote.startswith("S"):
-        return symbol  # 이미 데모 종목
-    return f"S{base}/S{quote}:S{settle or quote}"
+def resolve_demo_symbol(ex: ccxt.Exchange, symbol: str) -> str:
+    """실제 종목(BTC/USDT:USDT)에 대응하는 데모 종목의 ccxt 심볼을 찾는다.
+    Bitget 데모 종목 ID 는 S+기초자산+S+견적자산(SBTCSUSDT). ccxt 가 이를 어떤 심볼 문자열로
+    등록하는지는 거래소 응답에 달려 있으므로 이름을 추측하지 않고 ID 로 조회한다."""
+    m = ex.market(symbol)
+    demo_id = f"S{m['baseId']}S{m['quoteId']}"
+    found = (getattr(ex, "markets_by_id", None) or {}).get(demo_id)
+    if found:
+        return found[0]["symbol"]
+    demo_like = sorted(x["symbol"] for x in ex.markets.values()
+                       if str(x.get("settle", "")).startswith("S") or str(x.get("id", "")).startswith("S"))[:8]
+    raise RuntimeError(f"데모 종목 {demo_id} 를 거래소 종목 목록에서 찾지 못함. 'S' 계열 종목 예: {demo_like}")
 
 
 def configure_demo(ex: ccxt.Exchange) -> None:
@@ -51,7 +56,9 @@ class BitgetFutures:
         if demo:
             # 데모는 일반 선물(classic) API + 데모 종목(SBTC/SUSDT) + SUSDT 증거금으로 동작(UTA 자동감지 끔).
             configure_demo(ex)
-            return cls(ex, demo_symbol(symbol), leverage, data_symbol=symbol, demo=True)
+            b = cls(ex, symbol, leverage, data_symbol=symbol, demo=True)  # 종목 목록을 불러온 뒤
+            b.symbol = resolve_demo_symbol(ex, symbol)  # 데모 종목 심볼로 교체
+            return b
         return cls(ex, symbol, leverage)
 
     def closed_candles(self, timeframe: str, limit: int = 300) -> pd.DataFrame:
@@ -133,7 +140,8 @@ class BitgetFutures:
         out: dict = {"symbol": self.symbol, "leverage": self.leverage, "hedged": self.hedged}
         try:
             out["settle"] = self.ex.market(self.symbol).get("settle")
-            out["demo_symbols(SBTC*)"] = [s for s in self.ex.markets if s.startswith("SBTC")][:3]
+            out["demo_symbols"] = sorted(k for k, v in self.ex.markets.items()
+                                          if str(v.get("id", "")).startswith("SBTC"))[:5]
             out["data_symbol"], out["demo"] = self.data_symbol, self.demo
         except ccxt.BaseError as e:
             out["market"] = f"조회 실패: {type(e).__name__}"
