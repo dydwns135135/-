@@ -85,3 +85,42 @@ def test_test_open_and_close():
     assert test_open(b2, FuturesConfig())[0].startswith("이미 포지션")
     test_close(b2)
     assert b2.calls == [("close", "long", 0.001)]
+
+
+def test_order_retries_hedged_on_25236():
+    import ccxt
+    from crypto.exchange import BitgetFutures
+
+    class Ex:
+        def __init__(self): self.calls = []
+        def load_markets(self): pass
+        def create_order(self, sym, typ, side, amt, params=None):
+            self.calls.append(params["hedged"])
+            if not params["hedged"]:
+                raise ccxt.ExchangeError('bitget {"code":"25236","msg":"Incorrect position open type"}')
+            return {"id": "1"}
+
+    ex = Ex()
+    b = BitgetFutures(ex, "BTC/USDT:USDT", 2)
+    b._order("buy", 0.001, {})
+    assert ex.calls == [False, True] and b.hedged is True
+    b._order("sell", 0.001, {"reduceOnly": True})
+    assert ex.calls == [False, True, True]  # 이후엔 학습한 모드로 바로 주문
+
+
+def test_other_errors_not_retried():
+    import ccxt
+    import pytest
+    from crypto.exchange import BitgetFutures
+
+    class Ex:
+        calls = 0
+        def load_markets(self): pass
+        def create_order(self, *a, **k):
+            Ex.calls += 1
+            raise ccxt.ExchangeError("bitget 40001 other")
+
+    b = BitgetFutures(Ex(), "BTC/USDT:USDT", 2)
+    with pytest.raises(ccxt.ExchangeError):
+        b._order("buy", 1, {})
+    assert Ex.calls == 1

@@ -15,6 +15,7 @@ import pandas as pd
 class BitgetFutures:
     def __init__(self, ex: ccxt.Exchange, symbol: str, leverage: int):
         self.ex, self.symbol, self.leverage = ex, symbol, leverage
+        self.hedged: bool | None = None  # 계좌 포지션 모드: 주문이 성공한 방식으로 학습(None=아직 모름)
         ex.load_markets()
 
     @classmethod
@@ -57,8 +58,24 @@ class BitgetFutures:
             except ccxt.BaseError:
                 pass  # 이미 같은 값이면 오류가 날 수 있음
         amt = float(self.ex.amount_to_precision(self.symbol, amount))
-        self.ex.create_order(self.symbol, "market", side, amt,
-                             params={"stopLoss": {"triggerPrice": stop_price}})  # TODO(verify)
+        self._order(side, amt, {"stopLoss": {"triggerPrice": stop_price}})  # TODO(verify)
+
+    def _order(self, side: str, amount: float, params: dict):
+        """단방향/헤지 모드를 모르면 단방향으로 먼저 시도하고, Bitget 오류 25236
+        (Incorrect position open type)이면 헤지 방식으로 재시도한다. 성공한 방식은 기억한다."""
+        modes = [self.hedged] if self.hedged is not None else [False, True]
+        err: Exception | None = None
+        for hedged in modes:
+            try:
+                order = self.ex.create_order(self.symbol, "market", side, amount,
+                                             params={**params, "hedged": hedged})
+                self.hedged = hedged
+                return order
+            except ccxt.ExchangeError as e:
+                if "25236" not in str(e):
+                    raise
+                err = e
+        raise err  # type: ignore[misc]
 
     def test_amount(self, min_notional: float = 7.0) -> float:
         """거래소 최소 수량 단위로, 명목가치가 min_notional USDT 이상 되는 가장 작은 수량."""
@@ -84,4 +101,4 @@ class BitgetFutures:
 
     def close(self, side: str, contracts: float) -> None:
         opp = "sell" if side == "long" else "buy"
-        self.ex.create_order(self.symbol, "market", opp, contracts, params={"reduceOnly": True})
+        self._order(opp, contracts, {"reduceOnly": True})

@@ -49,7 +49,8 @@ def test_open(broker, cfg: FuturesConfig) -> list[str]:
     stop = px * (1 - cfg.stop_loss)
     broker.open("buy", amt, stop)
     info = broker.stop_info()
-    return [f"🧪 테스트 롱 {amt} @ ~{px:.2f}, 손절 {stop:.2f}", f"손절 진단: {info}",
+    mode = {None: "?", False: "단방향", True: "헤지"}[getattr(broker, "hedged", None)]
+    return [f"🧪 테스트 롱 {amt} @ ~{px:.2f}, 손절 {stop:.2f}, 계좌 포지션모드={mode}", f"손절 진단: {info}",
             "Bitget 앱(데모)에서 포지션과 손절(TP/SL)이 보이는지 확인 → 확인 후 test-close 실행"]
 
 
