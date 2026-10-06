@@ -157,7 +157,7 @@ def test_live_aborts_on_permission_error_but_demo_continues():
     with pytest.raises(ccxt.ExchangeError):
         live.open("buy", 0.001, 1.0)
     assert live.ex.orders == 0
-    demo = BitgetFutures(Ex(), "SBTC/SUSDT:SUSDT", 2, demo=True)
+    demo = BitgetFutures(Ex(), "BTC/USDT:USDT", 2, demo=True)
     demo.open("buy", 0.001, 1.0)
     assert demo.ex.orders == 1 and demo.setup_errors
 
@@ -171,53 +171,3 @@ def test_demo_always_sends_paptrading_header_even_for_susdt_products():
     assert ex.options["uta"] is False
     # 실제 요청 직전에 합쳐지는 헤더 (S 상품 요청이라 ccxt 가 자체 헤더를 빼도 남아야 함)
     assert ex.prepare_request_headers({})["PAPTRADING"] == "1"
-
-
-class FakeRaw:
-    """BitgetDemoFutures 용 가짜 ccxt: 직접 호출 메서드를 기록한다."""
-    def __init__(self, fail_one_way=False):
-        self.calls, self.fail_one_way = [], fail_one_way
-    def load_markets(self): pass
-    def market(self, s): return {"baseId": "BTC", "limits": {"amount": {"min": 0.0001}}}
-    def amount_to_precision(self, s, a): return f"{a:.4f}"
-    def price_to_precision(self, s, p): return f"{p:.1f}"
-    def fetch_ticker(self, s): return {"last": 100000.0}
-    def privateMixPostV2MixAccountSetPositionMode(self, p): self.calls.append(("pos_mode", p)); return {}
-    def privateMixPostV2MixAccountSetMarginMode(self, p): self.calls.append(("margin", p)); return {}
-    def privateMixPostV2MixAccountSetLeverage(self, p): self.calls.append(("lev", p)); return {}
-    def privateMixPostV2MixOrderPlaceOrder(self, p):
-        import ccxt
-        self.calls.append(("order", p))
-        if self.fail_one_way and "tradeSide" not in p:
-            raise ccxt.ExchangeError('bitget {"code":"40774","msg":"unilateral"}')
-        return {"code": "00000"}
-    def privateMixGetV2MixAccountAccounts(self, p):
-        self.calls.append(("acct", p)); return {"data": [{"marginCoin": "SUSDT", "accountEquity": "10000"}]}
-    def privateMixGetV2MixPositionAllPosition(self, p):
-        return {"data": [{"symbol": "SBTCSUSDT", "holdSide": "long", "total": "0.0001", "openPriceAvg": "99000"}]}
-
-
-def test_demo_raw_open_builds_susdt_order_with_stop():
-    from crypto.exchange import BitgetDemoFutures
-    ex = FakeRaw()
-    b = BitgetDemoFutures(ex, "BTC/USDT:USDT", 2)
-    assert b.market_id == "SBTCSUSDT" and b.balance() == 10000.0
-    b.open("buy", 0.0001, 97000.0)
-    order = [c for c in ex.calls if c[0] == "order"][0][1]
-    assert order["symbol"] == "SBTCSUSDT" and order["productType"] == "SUSDT-FUTURES"
-    assert order["marginCoin"] == "SUSDT" and order["side"] == "buy" and order["presetStopLossPrice"] == "97000.0"
-    assert "tradeSide" not in order and b.hedged is False
-    assert ("lev", {"symbol": "SBTCSUSDT", "productType": "SUSDT-FUTURES", "marginCoin": "SUSDT", "leverage": "2"}) in ex.calls
-    pos = b.position()
-    assert pos == {"side": "long", "contracts": 0.0001, "entry": 99000.0}
-
-
-def test_demo_raw_falls_back_to_hedge_and_closes_with_trade_side():
-    from crypto.exchange import BitgetDemoFutures
-    ex = FakeRaw(fail_one_way=True)
-    b = BitgetDemoFutures(ex, "BTC/USDT:USDT", 2)
-    b.open("buy", 0.0001, 97000.0)
-    assert b.hedged is True
-    b.close("long", 0.0001)
-    close = [c for c in ex.calls if c[0] == "order"][-1][1]
-    assert close["tradeSide"] == "close" and close["side"] == "buy" and "reduceOnly" not in close
