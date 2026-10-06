@@ -31,6 +31,53 @@ def decide(want_long: bool, has_position: bool) -> str:
     return "hold"
 
 
+ENSEMBLE_LOOKBACKS = (30, 45, 60, 90, 120, 150, 180, 250)
+
+
+def ensemble_weight(closes: pd.Series, lookbacks=ENSEMBLE_LOOKBACKS) -> tuple[float, int] | None:
+    """(양(+)인 기간의 비율, 양(+)인 기간 수). 데이터가 가장 긴 기간보다 짧으면 None."""
+    if len(closes) <= max(lookbacks):
+        return None
+    pos = sum(bool(closes.iloc[-1] > closes.iloc[-1 - lb]) for lb in lookbacks)
+    return pos / len(lookbacks), pos
+
+
+def plan_rebalance(target_w: float, alloc: float, equity: float, price: float, current: float,
+                   step: float = 0.10, min_notional: float = 6.0) -> tuple[str, float]:
+    """목표 비중(0~1)에 맞추기 위한 ('buy'|'sell'|'hold', 계약 수). 잔고 대비 step(기본 10%p) 미만의
+    미세 조정과 최소 주문 금액 미만은 하지 않는다(수수료 절감). 목표가 0이면 전량 청산."""
+    full = equity * alloc / price  # 비중 100% 일 때의 수량
+    delta = full * target_w - current
+    if target_w <= 0:
+        return ("sell", current) if current * price >= min_notional else ("hold", 0.0)
+    if abs(delta) * price < min_notional or abs(delta) < step * full:
+        return "hold", 0.0
+    return ("buy", delta) if delta > 0 else ("sell", -delta)
+
+
+def run_once_ensemble(broker, alloc: float = 0.5, stop_loss: float | None = None) -> list[str]:
+    candles = broker.closed_candles("1d", limit=max(ENSEMBLE_LOOKBACKS) + 40, deep=True)
+    res = ensemble_weight(candles["close"])
+    if res is None:
+        return [f"일봉이 부족해 판단 보류 ({len(candles)}개, 필요 {max(ENSEMBLE_LOOKBACKS) + 1}개 이상)"]
+    w, npos = res
+    pos = broker.position()
+    current = float(pos["contracts"]) if pos else 0.0
+    equity, px = broker.balance(), broker.price()
+    act, qty = plan_rebalance(w, alloc, equity, px, current)
+    head = (f"앙상블 모멘텀: {len(ENSEMBLE_LOOKBACKS)}개 기간 중 {npos}개 양(+) → 목표 비중 {w:.0%} "
+            f"(잔고의 {w * alloc:.0%}), 현재 {current:.5f} BTC")
+    if act == "buy":
+        stop = px * (1 - stop_loss) if stop_loss else None
+        broker.open("buy", qty, stop)
+        return [head, f"🟢 {qty:.5f} BTC 추가 매수 @ ~{px:,.0f}"]
+    if act == "sell":
+        broker.close("long", qty)
+        kind = "전량 청산" if qty >= current - 1e-12 else "일부 청산"
+        return [head, f"🔴 {qty:.5f} BTC {kind} @ ~{px:,.0f}"]
+    return [head, "조정 없음(차이가 작거나 최소 주문 미만)"]
+
+
 def run_once(broker, lookback: int = 90, alloc: float = 0.5, stop_loss: float | None = None) -> list[str]:
     candles = broker.closed_candles("1d", limit=lookback + 40, deep=True)
     want = momentum_positive(candles["close"], lookback)
@@ -60,6 +107,8 @@ def main() -> None:
     ap.add_argument("--lookback", type=int, default=90)
     ap.add_argument("--alloc", type=float, default=0.5, help="잔고 중 투입 비율(레버리지 1배 기준)")
     ap.add_argument("--stop-loss", type=float, default=None, help="선택: 진입가 대비 손절 비율(백테스트에는 없음)")
+    ap.add_argument("--mode", choices=["single", "ensemble"], default="single",
+                    help="single: lookback 하나 / ensemble: 30~250일 8개 기간의 양(+) 비율만큼 보유")
     ap.add_argument("--live", action="store_true")
     a = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -69,13 +118,14 @@ def main() -> None:
     from .exchange import BitgetFutures
     try:
         broker = BitgetFutures.from_env(a.symbol, 1, demo=not a.live)  # 레버리지 1배 고정
-        notes = run_once(broker, a.lookback, a.alloc, a.stop_loss)
+        notes = (run_once_ensemble(broker, a.alloc, a.stop_loss) if a.mode == "ensemble"
+                 else run_once(broker, a.lookback, a.alloc, a.stop_loss))
     except Exception as e:
         notify.send(f"❌ 모멘텀봇 오류 [{mode}]: {type(e).__name__}: {str(e)[:300]}")
         raise
     text = "\n".join(notes)
     log.info(text)
-    notify.send(f"🪙 모멘텀봇 [{mode}] {a.symbol}\n{text}")
+    notify.send(f"🪙 모멘텀봇 [{mode}/{a.mode}] {a.symbol}\n{text}")
 
 
 if __name__ == "__main__":

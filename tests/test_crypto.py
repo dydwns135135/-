@@ -295,7 +295,7 @@ def test_sensitivity_report_shape():
     from crypto.momentum_sensitivity import fmt, sensitivity, summarize
 
     rep = sensitivity(synthetic_prices(1500, seed=6, vol=0.02))
-    assert len(rep) == 27 and "250일 모멘텀" in fmt(rep) and "개 중" in summarize(rep)[-1]
+    assert len(rep) == 30 and "250일 모멘텀" in fmt(rep)  # 보유 + 8개 + 앙상블 = 10 전략 × 3 구간 and "개 중" in summarize(rep)[-1]
 
 
 def test_telegram_find_chat_ids_hides_personal_info():
@@ -369,3 +369,60 @@ def test_deep_candles_paginate_past_default_90_bar_limit():
     assert len(df) >= 91 and df.index.is_monotonic_increasing
     assert df.index[-1] == pd.Timestamp(999 * day, unit="ms", tz="UTC")  # 마지막은 마감된 봉
     assert all(lim <= 200 for _, lim in Ex.calls if _ is not None)
+
+
+def test_momentum_ensemble_strategy_fraction_causal():
+    from crypto import strategies as S
+
+    df = synthetic_prices(900, seed=21, vol=0.02)
+    w = S.momentum_ensemble(df)
+    assert w.between(0, 1).all() and (w.iloc[:250] == 0).all()   # 250일 쌓이기 전엔 현금
+    assert w.iloc[250:].nunique() > 2                              # 0/1 이 아닌 중간 비중도 나온다
+    df2 = df.copy(); df2.iloc[700:] *= 3
+    pd.testing.assert_series_equal(w.iloc[:700], S.momentum_ensemble(df2).iloc[:700])  # 인과성
+
+
+def test_ensemble_weight_and_rebalance_plan():
+    from crypto.momentum_bot import ensemble_weight, plan_rebalance
+
+    up = pd.Series(np.linspace(100, 300, 300)); down = pd.Series(np.linspace(300, 100, 300))
+    assert ensemble_weight(up) == (1.0, 8) and ensemble_weight(down) == (0.0, 0)
+    assert ensemble_weight(up.iloc[:200]) is None
+    # equity 10000, alloc 0.5, price 100 → 비중 100% = 50 개
+    assert plan_rebalance(1.0, 0.5, 10000, 100, 0)[0] == "buy" and plan_rebalance(1.0, 0.5, 10000, 100, 0)[1] == 50
+    assert plan_rebalance(0.5, 0.5, 10000, 100, 50) == ("sell", 25)          # 절반으로 축소
+    assert plan_rebalance(0.0, 0.5, 10000, 100, 50) == ("sell", 50)          # 전량
+    assert plan_rebalance(0.875, 0.5, 10000, 100, 50) == ("sell", 6.25)      # 12.5%p 차이: 조정 기준(10%p) 이상 → 축소
+    assert plan_rebalance(1.0, 0.5, 10000, 100, 48)[0] == "hold"             # 4%p 차이는 무시
+    assert plan_rebalance(0.0, 0.5, 10000, 0.0001, 0.00001)[0] == "hold"     # 최소 주문 미만
+
+
+class _EnsBroker(_MomBroker):
+    def __init__(self, closes, pos=None, bal=10000.0):
+        super().__init__(closes, pos, bal)
+
+
+def test_run_once_ensemble_buys_partial_and_full_close():
+    from crypto.momentum_bot import run_once_ensemble
+
+    up = list(np.linspace(100, 400, 320))
+    b = _EnsBroker(up)                      # 8개 모두 + → 비중 100% = 잔고 50%
+    run_once_ensemble(b, 0.5)
+    assert b.calls[0][:2] == ("open", "buy") and abs(b.calls[0][2] - 10000 * 0.5 / 400) < 1e-4
+    down = list(np.linspace(400, 100, 320))
+    b2 = _EnsBroker(down, pos={"side": "long", "contracts": 12.5, "entry": 300.0})
+    run_once_ensemble(b2, 0.5)
+    assert b2.calls == [("close", "long", 12.5)]   # 모두 − → 전량 청산
+    b3 = _EnsBroker(up, pos={"side": "long", "contracts": 12.5, "entry": 300.0})
+    assert "조정 없음" in run_once_ensemble(b3, 0.5)[1] and b3.calls == []  # 이미 목표 비중
+    b4 = _EnsBroker(up[:100])
+    assert "부족" in run_once_ensemble(b4, 0.5)[0]
+
+
+def test_sensitivity_includes_ensemble_and_summary():
+    from crypto.momentum_sensitivity import ENSEMBLE, fmt, sensitivity, summarize
+
+    rep = sensitivity(synthetic_prices(2000, seed=8, vol=0.02))
+    assert (rep["전략"] == ENSEMBLE).sum() == 3 and ENSEMBLE in fmt(rep)
+    txt = "\n".join(summarize(rep))
+    assert "[앙상블] 샤프" in txt and "[앙상블] 최대낙폭" in txt and "8개 중" in txt

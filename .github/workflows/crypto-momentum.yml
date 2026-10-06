@@ -31,6 +31,7 @@ jobs:
           ENABLED: ${{ vars.MOMENTUM_ENABLED }}
           LOOKBACK: ${{ vars.MOMENTUM_LOOKBACK || '90' }}
           ALLOC: ${{ vars.MOMENTUM_ALLOC || '0.5' }}
+          MODE: ${{ vars.MOMENTUM_MODE || 'single' }}
         run: |
           if [ "${{ github.event_name }}" = "schedule" ] && [ "$ENABLED" != "true" ]; then echo "MOMENTUM_ENABLED!=true, 건너뜀"; exit 0; fi
-          python -m crypto.momentum_bot --lookback "$LOOKBACK" --alloc "$ALLOC"
+          python -m crypto.momentum_bot --mode "$MODE" --lookback "$LOOKBACK" --alloc "$ALLOC"

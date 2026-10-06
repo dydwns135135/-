@@ -162,5 +162,6 @@ class BitgetFutures:
 
     def close(self, side: str, contracts: float) -> None:
         opp = "sell" if side == "long" else "buy"
-        self._order(opp, contracts, {"reduceOnly": True})
+        amt = float(self.ex.amount_to_precision(self.symbol, contracts))
+        self._order(opp, amt, {"reduceOnly": True})
 

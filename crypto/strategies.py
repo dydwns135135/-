@@ -26,6 +26,18 @@ def momentum(df: pd.DataFrame, lookback: int = 90, short: bool = False) -> pd.Se
     return pos.where(ret.notna(), 0.0)
 
 
+ENSEMBLE_LOOKBACKS = (30, 45, 60, 90, 120, 150, 180, 250)
+
+
+def momentum_ensemble(df: pd.DataFrame, lookbacks: tuple[int, ...] = ENSEMBLE_LOOKBACKS) -> pd.Series:
+    """여러 기간 모멘텀 중 '올랐다(+)'인 비율(0~1)만큼 롱 보유. 한 기간에 운을 걸지 않는다(롱만).
+    데이터가 가장 긴 기간(250일)만큼 쌓이기 전에는 현금(0)."""
+    c = df["close"]
+    votes = pd.concat([(c.pct_change(lb) > 0).astype(float).where(c.pct_change(lb).notna()) for lb in lookbacks], axis=1)
+    w = votes.mean(axis=1)
+    return w.where(votes.notna().all(axis=1), 0.0).fillna(0.0)
+
+
 def donchian(df: pd.DataFrame, entry: int = 20, exit_: int = 10, short: bool = False) -> pd.Series:
     """직전 entry 일 최고가를 종가가 돌파하면 롱, 직전 exit_ 일 최저가를 이탈하면 청산(숏이면 반대)."""
     c = df["close"].to_numpy()
