@@ -249,7 +249,7 @@ class _MomBroker:
         idx = pd.date_range("2025-01-01", periods=len(closes), freq="D", tz="UTC")
         self.df = pd.DataFrame({"open": closes, "high": closes, "low": closes, "close": closes}, index=idx)
         self._pos, self.bal, self.calls = pos, bal, []
-    def closed_candles(self, tf, limit=300): return self.df
+    def closed_candles(self, tf, limit=300, deep=False): return self.df
     def price(self): return float(self.df["close"].iloc[-1])
     def balance(self): return self.bal
     def position(self): return self._pos
@@ -342,3 +342,30 @@ def test_telegram_setup_reports_bad_token_without_leaking(monkeypatch, capsys):
     assert T.main() == 1
     out = capsys.readouterr().out
     assert "TOKEN_XYZ" not in out and "네트워크 오류" in out
+
+
+def test_deep_candles_paginate_past_default_90_bar_limit():
+    """기본 조회는 ~90개만 주지만 since 로 이어 받으면 필요한 만큼 받는다(run: 89개 → 판단 보류)."""
+    from crypto.exchange import BitgetFutures
+
+    day = 86_400_000
+    now = 1_000 * day + 5_000
+    allrows = [[i * day, 1, 2, 0.5, 1.5, 1] for i in range(0, 1001)]  # 1001번째(1000*day)는 진행 중인 봉
+
+    class Ex:
+        calls = []
+        def load_markets(self): pass
+        def parse_timeframe(self, tf): return 86400
+        def fetch_ohlcv(self, s, tf, since=None, limit=300):
+            Ex.calls.append((since, limit))
+            if since is None:  # 기본 조회: 최근 89개만
+                return allrows[-89:]
+            return [r for r in allrows if r[0] >= since][:limit]
+
+    b = BitgetFutures(Ex(), "BTC/USDT:USDT", 1)
+    b._now_ms = staticmethod(lambda: now)
+    assert len(b.closed_candles("1d", limit=130)) == 88          # 기존 방식: 90일 모멘텀 불가
+    df = b.closed_candles("1d", limit=130, deep=True)
+    assert len(df) >= 91 and df.index.is_monotonic_increasing
+    assert df.index[-1] == pd.Timestamp(999 * day, unit="ms", tz="UTC")  # 마지막은 마감된 봉
+    assert all(lim <= 200 for _, lim in Ex.calls if _ is not None)

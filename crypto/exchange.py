@@ -48,9 +48,23 @@ class BitgetFutures:
             return cls(ex, symbol, leverage, demo=True)
         return cls(ex, symbol, leverage)
 
-    def closed_candles(self, timeframe: str, limit: int = 300) -> pd.DataFrame:
-        rows = self.ex.fetch_ohlcv(self.data_symbol, timeframe, limit=limit)
+    def closed_candles(self, timeframe: str, limit: int = 300, deep: bool = False) -> pd.DataFrame:
+        """마감된 봉만. deep=True 는 기간(since)을 지정해 과거 봉을 이어 받는다 — Bitget 의 기본 캔들 조회는
+        일봉을 최근 ~90개까지만 주므로(run: 89개), 90일 이상 필요한 규칙은 deep 으로 받는다."""
         dur_ms = int(self.ex.parse_timeframe(timeframe) * 1000)
+        if deep:
+            since, rows = self._now_ms() - (limit + 2) * dur_ms, []
+            for _ in range(8):
+                batch = self.ex.fetch_ohlcv(self.data_symbol, timeframe, since=since, limit=min(limit + 2, 200))
+                new = [r for r in batch if not rows or r[0] > rows[-1][0]]
+                if not new:
+                    break
+                rows += new
+                since = rows[-1][0] + 1
+                if rows[-1][0] + dur_ms >= self._now_ms():  # 현재 봉까지 도달
+                    break
+        else:
+            rows = self.ex.fetch_ohlcv(self.data_symbol, timeframe, limit=limit)
         closed = [r for r in rows if r[0] + dur_ms <= self._now_ms()]  # 시각이 지나 마감된 봉만
         df = pd.DataFrame(closed, columns=["ts", "open", "high", "low", "close", "volume"])
         df.index = pd.to_datetime(df.pop("ts"), unit="ms", utc=True)
