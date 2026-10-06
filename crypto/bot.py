@@ -47,7 +47,12 @@ def test_open(broker, cfg: FuturesConfig) -> list[str]:
         return ["이미 포지션이 있어 테스트 주문을 건너뜀 (--test-close 로 먼저 정리)"]
     px, amt = broker.price(), broker.test_amount()
     stop = px * (1 - cfg.stop_loss)
-    broker.open("buy", amt, stop)
+    try:
+        broker.open("buy", amt, stop)
+    except Exception as e:  # 실패 원인 파악을 위해 진단 정보를 로그로 남긴 뒤 다시 던진다
+        log.error("테스트 주문 실패: %s: %s", type(e).__name__, str(e)[:300])
+        log.error("진단: %s", broker.diagnose() if hasattr(broker, "diagnose") else "n/a")
+        raise
     info = broker.stop_info()
     mode = {None: "?", False: "단방향", True: "헤지"}[getattr(broker, "hedged", None)]
     return [f"🧪 테스트 롱 {amt} @ ~{px:.2f}, 손절 {stop:.2f}, 계좌 포지션모드={mode}", f"손절 진단: {info}",

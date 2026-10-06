@@ -124,3 +124,17 @@ def test_other_errors_not_retried():
     with pytest.raises(ccxt.ExchangeError):
         b._order("buy", 1, {})
     assert Ex.calls == 1
+
+
+def test_test_open_logs_diagnosis_on_failure(caplog):
+    import pytest
+    from crypto.bot import test_open
+
+    class B(FakeBroker):
+        def test_amount(self): return 0.001
+        def open(self, *a): raise RuntimeError("25203 Insufficient margin")
+        def diagnose(self): return {"balances": {"SUSDT": 10000}}
+
+    with caplog.at_level("ERROR", logger="crypto"), pytest.raises(RuntimeError):
+        test_open(B(synthetic_prices(300)), FuturesConfig())
+    assert "SUSDT" in caplog.text and "Insufficient" in caplog.text
