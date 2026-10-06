@@ -21,6 +21,14 @@ def demo_symbol(symbol: str) -> str:
     return f"S{base}/S{quote}:S{settle or quote}"
 
 
+def configure_demo(ex: ccxt.Exchange) -> None:
+    """데모(모의) 거래 설정. ccxt 는 S 접두 상품(SUSDT-FUTURES) 요청에는 PAPTRADING 헤더를 빼지만
+    Bitget 은 데모 키 요청에 항상 이 헤더를 요구한다(없으면 40099 exchange environment is incorrect)."""
+    ex.options["uta"] = False  # 일반 선물 API 사용(UTA 자동감지 끔)
+    ex.set_sandbox_mode(True)
+    ex.headers = {**(ex.headers or {}), "PAPTRADING": "1"}
+
+
 class BitgetFutures:
     def __init__(self, ex: ccxt.Exchange, symbol: str, leverage: int,
                  data_symbol: str | None = None, demo: bool = False):
@@ -42,8 +50,7 @@ class BitgetFutures:
         })
         if demo:
             # 데모는 일반 선물(classic) API + 데모 종목(SBTC/SUSDT) + SUSDT 증거금으로 동작(UTA 자동감지 끔).
-            ex.options["uta"] = False
-            ex.set_sandbox_mode(True)  # TODO(verify)
+            configure_demo(ex)
             return cls(ex, demo_symbol(symbol), leverage, data_symbol=symbol, demo=True)
         return cls(ex, symbol, leverage)
 

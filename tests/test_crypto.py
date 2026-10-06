@@ -183,3 +183,14 @@ def test_live_aborts_on_permission_error_but_demo_continues():
     demo = BitgetFutures(Ex(), "SBTC/SUSDT:SUSDT", 2, demo=True)
     demo.open("buy", 0.001, 1.0)
     assert demo.ex.orders == 1 and demo.setup_errors
+
+
+def test_demo_always_sends_paptrading_header_even_for_susdt_products():
+    import ccxt
+    from crypto.exchange import configure_demo
+
+    ex = ccxt.bitget({"apiKey": "k", "secret": "s", "password": "p"})
+    configure_demo(ex)
+    assert ex.options["uta"] is False
+    # 실제 요청 직전에 합쳐지는 헤더 (S 상품 요청이라 ccxt 가 자체 헤더를 빼도 남아야 함)
+    assert ex.prepare_request_headers({})["PAPTRADING"] == "1"
