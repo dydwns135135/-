@@ -50,9 +50,16 @@ class BitgetFutures:
 
     def closed_candles(self, timeframe: str, limit: int = 300) -> pd.DataFrame:
         rows = self.ex.fetch_ohlcv(self.data_symbol, timeframe, limit=limit)
-        df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "volume"])
+        dur_ms = int(self.ex.parse_timeframe(timeframe) * 1000)
+        closed = [r for r in rows if r[0] + dur_ms <= self._now_ms()]  # 시각이 지나 마감된 봉만
+        df = pd.DataFrame(closed, columns=["ts", "open", "high", "low", "close", "volume"])
         df.index = pd.to_datetime(df.pop("ts"), unit="ms", utc=True)
-        return df.iloc[:-1][["open", "high", "low", "close"]]  # 마지막은 진행 중인 봉이라 제외
+        return df[["open", "high", "low", "close"]]
+
+    @staticmethod
+    def _now_ms() -> int:
+        import time
+        return int(time.time() * 1000)
 
     def price(self) -> float:
         return float(self.ex.fetch_ticker(self.data_symbol)["last"])
@@ -71,8 +78,8 @@ class BitgetFutures:
                 return {"side": p["side"], "contracts": float(p["contracts"]), "entry": float(p["entryPrice"])}
         return None
 
-    def open(self, side: str, amount: float, stop_price: float) -> None:
-        """side: 'buy'(롱) | 'sell'(숏). 격리마진 + 거래소 측 손절 주문."""
+    def open(self, side: str, amount: float, stop_price: float | None = None) -> None:
+        """side: 'buy'(롱) | 'sell'(숏). 격리마진 시도 + (지정하면) 거래소 측 손절 주문."""
         for fn, arg in ((self.ex.set_margin_mode, "isolated"), (self.ex.set_leverage, self.leverage)):
             try:
                 fn(arg, self.symbol)
@@ -81,7 +88,7 @@ class BitgetFutures:
                 if not self.demo and "40014" in str(e):  # 실거래에서 권한 부족이면 격리/레버리지 미설정 상태로 주문하지 않는다
                     raise
         amt = float(self.ex.amount_to_precision(self.symbol, amount))
-        self._order(side, amt, {"stopLoss": {"triggerPrice": stop_price}})  # TODO(verify)
+        self._order(side, amt, {"stopLoss": {"triggerPrice": stop_price}} if stop_price else {})
 
     def _order(self, side: str, amount: float, params: dict):
         """단방향/헤지 모드를 모르면 단방향으로 먼저 시도하고, Bitget 오류 25236

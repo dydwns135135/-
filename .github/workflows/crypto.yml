@@ -1,9 +1,6 @@
 name: crypto-futures
 
 on:
-  schedule:
-    # 4시간봉 마감(00,04,08,... UTC) 직후. 스케줄이 지연될 수 있어 손절은 거래소 주문으로 걸어둔다.
-    - cron: "7 */4 * * *"
   workflow_dispatch:
     inputs:
       live:

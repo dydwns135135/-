@@ -231,3 +231,68 @@ def test_strategy_compare_shape_and_verdict():
     rep = compare(synthetic_prices(1500, seed=5, vol=0.015))
     assert len(rep) == 30 and set(rep["구간"]) == {"전체", "앞60%", "뒤40%"}
     assert "SMA롱만+변동성타깃" in fmt(rep) and len(verdict(rep)) == 10
+
+
+def test_momentum_decide_and_signal():
+    from crypto.momentum_bot import decide, momentum_positive
+
+    up = pd.Series(np.linspace(100, 200, 120))
+    down = pd.Series(np.linspace(200, 100, 120))
+    assert momentum_positive(up, 90) is True and momentum_positive(down, 90) is False
+    assert momentum_positive(up.iloc[:50], 90) is None  # 데이터 부족
+    assert [decide(True, False), decide(False, True), decide(True, True), decide(False, False)] == \
+        ["open", "close", "hold", "hold"]
+
+
+class _MomBroker:
+    def __init__(self, closes, pos=None, bal=10000.0):
+        idx = pd.date_range("2025-01-01", periods=len(closes), freq="D", tz="UTC")
+        self.df = pd.DataFrame({"open": closes, "high": closes, "low": closes, "close": closes}, index=idx)
+        self._pos, self.bal, self.calls = pos, bal, []
+    def closed_candles(self, tf, limit=300): return self.df
+    def price(self): return float(self.df["close"].iloc[-1])
+    def balance(self): return self.bal
+    def position(self): return self._pos
+    def open(self, side, amount, stop=None): self.calls.append(("open", side, round(amount, 5), stop))
+    def close(self, side, contracts): self.calls.append(("close", side, contracts))
+
+
+def test_momentum_bot_opens_closes_holds_without_leverage():
+    from crypto.momentum_bot import run_once
+
+    up = list(np.linspace(100, 200, 140))
+    down = list(np.linspace(200, 100, 140))
+    b = _MomBroker(up)
+    run_once(b, 90, 0.5)
+    assert b.calls == [("open", "buy", round(10000 * 0.5 / 200, 5), None)]  # 잔고 50%, 1배
+    b2 = _MomBroker(down, pos={"side": "long", "contracts": 0.05, "entry": 150.0})
+    run_once(b2, 90, 0.5)
+    assert b2.calls == [("close", "long", 0.05)]
+    b3 = _MomBroker(up, pos={"side": "long", "contracts": 0.05, "entry": 150.0})
+    run_once(b3, 90, 0.5)
+    assert b3.calls == []  # 이미 보유 → 중복 진입 없음
+    b4 = _MomBroker(up[:50])
+    assert "부족" in run_once(b4, 90, 0.5)[0] and b4.calls == []
+
+
+def test_closed_candles_uses_clock_not_row_position():
+    from crypto.exchange import BitgetFutures
+
+    day = 86_400_000
+    class Ex:
+        def load_markets(self): pass
+        def parse_timeframe(self, tf): return 86400
+        def fetch_ohlcv(self, s, tf, limit=300):
+            return [[i * day, 1, 2, 0.5, 1.5, 1] for i in range(10)]  # 마지막 봉(9일)의 시작=9*day
+    b = BitgetFutures(Ex(), "BTC/USDT:USDT", 1)
+    b._now_ms = staticmethod(lambda: 9 * day + 1000)        # 9일 봉 진행 중 → 제외(0~8일 9개)
+    assert len(b.closed_candles("1d")) == 9
+    b._now_ms = staticmethod(lambda: 10 * day + 1000)       # 새 날이 되고 아직 새 봉이 없어도 9일 봉은 마감됨 → 10개
+    assert len(b.closed_candles("1d")) == 10
+
+
+def test_sensitivity_report_shape():
+    from crypto.momentum_sensitivity import fmt, sensitivity, summarize
+
+    rep = sensitivity(synthetic_prices(1500, seed=6, vol=0.02))
+    assert len(rep) == 27 and "250일 모멘텀" in fmt(rep) and "개 중" in summarize(rep)[-1]
