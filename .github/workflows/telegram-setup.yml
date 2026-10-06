@@ -1,0 +1,22 @@
+name: telegram-setup (텔레그램 설정 확인·테스트 알림)
+
+# 수동 실행. 토큰이 맞는지 확인하고, 내 chat id 를 찾아 로그에 출력하고, chat id 가 있으면 테스트 알림을 보낸다.
+# 토큰은 로그에 출력되지 않는다.
+on:
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests
+      - name: Telegram check
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -m trader.telegram_setup

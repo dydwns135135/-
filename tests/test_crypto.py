@@ -296,3 +296,49 @@ def test_sensitivity_report_shape():
 
     rep = sensitivity(synthetic_prices(1500, seed=6, vol=0.02))
     assert len(rep) == 27 and "250일 모멘텀" in fmt(rep) and "개 중" in summarize(rep)[-1]
+
+
+def test_telegram_find_chat_ids_hides_personal_info():
+    from trader.telegram_setup import find_chat_ids
+
+    updates = [
+        {"update_id": 1, "message": {"chat": {"id": 111, "type": "private", "first_name": "비밀", "username": "u"}, "text": "hi"}},
+        {"update_id": 2, "message": {"chat": {"id": -222, "type": "group", "title": "그룹"}}},
+        {"update_id": 3, "my_chat_member": {}},
+    ]
+    assert find_chat_ids(updates) == {111: "private", -222: "group"}
+
+
+def test_telegram_setup_never_prints_token(monkeypatch, capsys):
+    import requests
+    from trader import telegram_setup as T
+
+    TOKEN = "999:SECRET_TOKEN_VALUE"
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", TOKEN)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+
+    class R:
+        def __init__(self, j): self._j, self.status_code = j, 200
+        def json(self): return self._j
+
+    def fake_get(url, params=None, timeout=0):
+        assert TOKEN in url  # 요청 주소에는 토큰이 들어가지만 출력에는 나오면 안 됨
+        if url.endswith("getMe"): return R({"ok": True, "result": {"username": "my_bot"}})
+        return R({"ok": True, "result": [{"message": {"chat": {"id": 123, "type": "private", "first_name": "x"}}}]})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    assert T.main() == 0
+    out = capsys.readouterr().out
+    assert "123" in out and "private" in out and TOKEN not in out and "SECRET_TOKEN_VALUE" not in out
+
+
+def test_telegram_setup_reports_bad_token_without_leaking(monkeypatch, capsys):
+    import requests
+    from trader import telegram_setup as T
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bad:TOKEN_XYZ")
+    def boom(url, params=None, timeout=0): raise requests.ConnectionError("failed for " + url)
+    monkeypatch.setattr(requests, "get", boom)
+    assert T.main() == 1
+    out = capsys.readouterr().out
+    assert "TOKEN_XYZ" not in out and "네트워크 오류" in out
