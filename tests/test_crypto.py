@@ -140,11 +140,21 @@ def test_test_open_logs_diagnosis_on_failure(caplog):
     assert "SUSDT" in caplog.text and "Insufficient" in caplog.text
 
 
-def test_demo_symbol_mapping():
-    from crypto.exchange import demo_symbol
-    assert demo_symbol("BTC/USDT:USDT") == "SBTC/SUSDT:SUSDT"
-    assert demo_symbol("ETH/USDT:USDT") == "SETH/SUSDT:SUSDT"
-    assert demo_symbol("SBTC/SUSDT:SUSDT") == "SBTC/SUSDT:SUSDT"
+def test_resolve_demo_symbol_by_market_id():
+    import pytest
+    from crypto.exchange import resolve_demo_symbol
+
+    class Ex:
+        markets = {"BTC/USDT:USDT": {"id": "BTCUSDT", "baseId": "BTC", "quoteId": "USDT", "symbol": "BTC/USDT:USDT", "settle": "USDT"},
+                   "BTC/USDT:SUSDT": {"id": "SBTCSUSDT", "baseId": "BTC", "quoteId": "USDT", "symbol": "BTC/USDT:SUSDT", "settle": "SUSDT"}}
+        markets_by_id = {"BTCUSDT": [markets["BTC/USDT:USDT"]], "SBTCSUSDT": [markets["BTC/USDT:SUSDT"]]}
+        def market(self, s): return self.markets[s]
+
+    # ccxt 가 데모 종목을 어떤 심볼로 등록했든 ID(SBTCSUSDT)로 찾는다
+    assert resolve_demo_symbol(Ex(), "BTC/USDT:USDT") == "BTC/USDT:SUSDT"
+    ex2 = Ex(); ex2.markets_by_id = {"BTCUSDT": ex2.markets_by_id["BTCUSDT"]}
+    with pytest.raises(RuntimeError, match="SBTCSUSDT"):
+        resolve_demo_symbol(ex2, "BTC/USDT:USDT")
 
 
 def test_demo_uses_susdt_balance_and_real_data_symbol():
