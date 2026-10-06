@@ -32,7 +32,7 @@ def decide(want_long: bool, has_position: bool) -> str:
 
 
 def run_once(broker, lookback: int = 90, alloc: float = 0.5, stop_loss: float | None = None) -> list[str]:
-    candles = broker.closed_candles("1d", limit=lookback + 40)
+    candles = broker.closed_candles("1d", limit=lookback + 40, deep=True)
     want = momentum_positive(candles["close"], lookback)
     if want is None:
         return [f"일봉이 부족해 판단 보류 ({len(candles)}개, 필요 {lookback + 1}개 이상)"]
