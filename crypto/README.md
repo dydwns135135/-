@@ -14,6 +14,8 @@ export BITGET_API_KEY=... BITGET_API_SECRET=... BITGET_API_PASSPHRASE=...
 python -m crypto                                              # 데모 모드 1회 실행
 CRYPTO_CONFIRM_LIVE=yes python -m crypto --live               # 실거래
 ```
+데모 모드는 Bitget 데모 방식(일반 선물 API, `SBTC/SUSDT:SUSDT` 종목, `SUSDT` 증거금)으로 주문하고, 신호용 시세는 실제 BTC/USDT를 쓴다. 데모 키에는 **선물 주문 + 선물 포지션 읽기/쓰기** 권한이 필요하다(포지션 쓰기가 없으면 오류 40014).
+
 Bitget API 키는 **거래 권한만** 주고 출금 권한은 끄고, 가능하면 IP 제한을 건다. 데모는 데모 전용 키가 필요하다.
 
 ## GitHub Actions (`.github/workflows/crypto.yml`)
