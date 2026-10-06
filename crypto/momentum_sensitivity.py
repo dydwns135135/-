@@ -13,12 +13,14 @@ from .backtest_report import load_data
 from .strategy_compare import metrics
 
 LOOKBACKS = (30, 45, 60, 90, 120, 150, 180, 250)
+ENSEMBLE = "앙상블(8개 평균)"
 
 
 def sensitivity(df: pd.DataFrame, lookbacks=LOOKBACKS) -> pd.DataFrame:
     pnls = {"보유(1배)": st.simulate(df, st.buy_hold(df))}
     for lb in lookbacks:
         pnls[f"{lb}일 모멘텀"] = st.simulate(df, st.momentum(df, lookback=lb))
+    pnls[ENSEMBLE] = st.simulate(df, st.momentum_ensemble(df, tuple(lookbacks)))
     n = len(next(iter(pnls.values())))
     cut = int(n * 0.6)
     segs = {"전체": slice(0, n), "앞60%": slice(0, cut), "뒤40%": slice(cut, n)}
@@ -32,7 +34,7 @@ def sensitivity(df: pd.DataFrame, lookbacks=LOOKBACKS) -> pd.DataFrame:
 def summarize(rep: pd.DataFrame) -> list[str]:
     bh = rep[rep["전략"] == "보유(1배)"].set_index("구간")
     lines, good = [], 0
-    names = [n for n in rep["전략"].unique() if n != "보유(1배)"]
+    names = [n for n in rep["전략"].unique() if n not in ("보유(1배)", ENSEMBLE)]
     for n in names:
         g = rep[rep["전략"] == n].set_index("구간")
         pos_both = g.loc["앞60%", "샤프"] > 0 and g.loc["뒤40%", "샤프"] > 0
@@ -42,6 +44,17 @@ def summarize(rep: pd.DataFrame) -> list[str]:
         lines.append(f"{n}: 두 구간 샤프>0 {'○' if pos_both else '×'} / 전체 샤프 보유보다 높음 {'○' if beat_bh_full else '×'} / "
                      f"낙폭 보유보다 작음 {'○' if smaller_dd else '×'}")
     lines.append(f"→ {len(names)}개 중 {good}개가 '두 구간 모두 양수 + 보유보다 높은 샤프'")
+    if (rep["전략"] == ENSEMBLE).any():
+        e = rep[rep["전략"] == ENSEMBLE].set_index("구간")
+        ind = rep[rep["전략"].isin(names)]
+        med = {seg: float(ind[ind["구간"] == seg]["샤프"].median()) for seg in ("전체", "앞60%", "뒤40%")}
+        worst_dd = float(ind[ind["구간"] == "전체"]["MDD"].min())
+        lines += [
+            "",
+            f"[앙상블] 샤프 전체 {e.loc['전체', '샤프']:.2f} / 앞60% {e.loc['앞60%', '샤프']:.2f} / 뒤40% {e.loc['뒤40%', '샤프']:.2f}"
+            f"  (개별 8개 중앙값: {med['전체']:.2f} / {med['앞60%']:.2f} / {med['뒤40%']:.2f}, 보유: {bh.loc['전체', '샤프']:.2f})",
+            f"[앙상블] 최대낙폭 {e.loc['전체', 'MDD']:+.1%} (개별 8개 중 최악 {worst_dd:+.1%}, 보유 {bh.loc['전체', 'MDD']:+.1%})",
+        ]
     return lines
 
 
