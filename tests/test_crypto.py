@@ -67,3 +67,21 @@ def test_bot_does_not_double_open():
     b = FakeBroker(df, {"side": "long", "contracts": 0.1, "entry": 1.0})
     run_once(b, "4h", FuturesConfig())
     assert not any(c[0] == "open" for c in b.calls)
+
+
+def test_test_open_and_close():
+    from crypto.bot import test_close, test_open
+
+    class B(FakeBroker):
+        def test_amount(self): return 0.001
+        def stop_info(self): return {"trigger_orders": []}
+
+    df = synthetic_prices(300)
+    b = B(df)
+    notes = test_open(b, FuturesConfig())
+    assert b.calls[0][:3] == ("open", "buy", 0.001) and b.calls[0][3] < b.price()
+    assert any("손절" in n for n in notes)
+    b2 = B(df, {"side": "long", "contracts": 0.001, "entry": 1.0})
+    assert test_open(b2, FuturesConfig())[0].startswith("이미 포지션")
+    test_close(b2)
+    assert b2.calls == [("close", "long", 0.001)]

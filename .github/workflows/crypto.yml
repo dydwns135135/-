@@ -10,6 +10,11 @@ on:
         description: "실거래로 실행 (기본: 데모)"
         type: boolean
         default: false
+      action:
+        description: "run=일반 실행 / test-open=데모 테스트 주문(+손절 확인) / test-close=테스트 포지션 청산"
+        type: choice
+        options: [run, test-open, test-close]
+        default: run
 
 concurrency: crypto-futures
 
@@ -36,10 +41,13 @@ jobs:
           SYMBOL: ${{ vars.CRYPTO_SYMBOL || 'BTC/USDT:USDT' }}
           LEVERAGE: ${{ vars.CRYPTO_LEVERAGE || '2' }}
           ENABLED: ${{ vars.CRYPTO_ENABLED }}
+          ACTION: ${{ github.event.inputs.action || 'run' }}
           LIVE: ${{ (github.event.inputs.live == 'true' || vars.CRYPTO_LIVE == 'true') && 'yes' || '' }}
         run: |
           # 스케줄 실행은 저장소 변수 CRYPTO_ENABLED=true 일 때만 (수동 실행은 항상 가능)
           if [ "${{ github.event_name }}" = "schedule" ] && [ "$ENABLED" != "true" ]; then echo "CRYPTO_ENABLED!=true, 건너뜀"; exit 0; fi
+          if [ "$ACTION" = "test-open" ]; then python -m crypto --symbol "$SYMBOL" --leverage "$LEVERAGE" --test-open; exit $?; fi
+          if [ "$ACTION" = "test-close" ]; then python -m crypto --symbol "$SYMBOL" --leverage "$LEVERAGE" --test-close; exit $?; fi
           if [ -n "$LIVE" ]; then
             CRYPTO_CONFIRM_LIVE=yes python -m crypto --symbol "$SYMBOL" --leverage "$LEVERAGE" --live
           else

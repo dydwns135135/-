@@ -60,6 +60,28 @@ class BitgetFutures:
         self.ex.create_order(self.symbol, "market", side, amt,
                              params={"stopLoss": {"triggerPrice": stop_price}})  # TODO(verify)
 
+    def test_amount(self, min_notional: float = 7.0) -> float:
+        """거래소 최소 수량 단위로, 명목가치가 min_notional USDT 이상 되는 가장 작은 수량."""
+        import math
+        step = float(self.ex.market(self.symbol)["limits"]["amount"]["min"] or 0.001)
+        return round(math.ceil(min_notional / (self.price() * step)) * step, 8)
+
+    def stop_info(self) -> dict:
+        """손절 주문이 붙었는지 확인하기 위한 진단 정보(거래소 응답 그대로 일부)."""
+        out: dict = {}
+        for name, params in (("trigger_orders", {"trigger": True}), ("stop_orders", {"stop": True})):
+            try:
+                out[name] = [
+                    {k: o.get(k) for k in ("id", "type", "side", "amount", "triggerPrice", "stopLossPrice", "reduceOnly")}
+                    for o in self.ex.fetch_open_orders(self.symbol, params=params)
+                ]
+            except ccxt.BaseError as e:
+                out[name] = f"조회 실패: {type(e).__name__}"
+        for p in self.ex.fetch_positions([self.symbol]):
+            if float(p.get("contracts") or 0) > 0:
+                out["position_stop"] = {k: v for k, v in (p.get("info") or {}).items() if "stop" in k.lower() or "sl" == k.lower()[:2]}
+        return out
+
     def close(self, side: str, contracts: float) -> None:
         opp = "sell" if side == "long" else "buy"
         self.ex.create_order(self.symbol, "market", opp, contracts, params={"reduceOnly": True})
