@@ -14,10 +14,11 @@ import pandas as pd
 
 def configure_demo(ex: ccxt.Exchange) -> None:
     """데모(모의) 거래 설정: 일반 종목(BTC/USDT:USDT)·USDT 증거금에 PAPTRADING 헤더를 붙인다.
-    - UTA 자동감지를 끈다: 데모 선물 지갑은 일반(classic) 계정이라 UTA 로 보내면 잔고가 비어 보여
-      25203 증거금 부족이 났다(run #5 진단).
-    - 헤더는 모든 요청에 강제한다(S 접두 상품에서 ccxt 가 빼는 경우 40099)."""
-    ex.options["uta"] = False
+    - 데모 계정은 통합 계정(UTA)이다: 키 권한 화면이 'Unified account' 이고, 데모 키로 UTA 설정 조회가
+      성공했다(run #1~#5 에서 ccxt 가 UTA 로 자동 판별). 따라서 UTA API 를 쓴다.
+      (일반 계정 API 로 강제하면 40014 권한 오류 — run #9, #10)
+    - 헤더는 모든 요청에 강제한다."""
+    ex.options["uta"] = True
     ex.set_sandbox_mode(True)
     ex.headers = {**(ex.headers or {}), "PAPTRADING": "1"}
 

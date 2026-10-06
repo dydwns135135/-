@@ -168,6 +168,6 @@ def test_demo_always_sends_paptrading_header_even_for_susdt_products():
 
     ex = ccxt.bitget({"apiKey": "k", "secret": "s", "password": "p"})
     configure_demo(ex)
-    assert ex.options["uta"] is False
+    assert ex.options["uta"] is True  # 데모 계정은 통합 계정(UTA)
     # 실제 요청 직전에 합쳐지는 헤더 (S 상품 요청이라 ccxt 가 자체 헤더를 빼도 남아야 함)
     assert ex.prepare_request_headers({})["PAPTRADING"] == "1"
