@@ -1294,3 +1294,106 @@ def test_chandelier_direction_follows_trend_and_compare_shape():
     spot = ch.compare(df, 365, 0.001, long_short=False)
     assert len(spot) == 4 and "롱+숏 전체" not in spot.index
     assert "연환산" in ch.fmt(ch.average([t, t]))
+
+
+class _FakeEx:
+    """ccxt 거래소 흉내: 마감봉 + 진행 중 봉 1개를 돌려주고 주문을 기록한다."""
+    def __init__(self, df, quote_free=1000.0, base_free=0.0, ex_id="binance", min_cost=5.0):
+        self.id, self.df, self.orders = ex_id, df, []
+        self.quote_free, self.base_free = quote_free, base_free
+        self.markets = {"BTC/USDT": {"limits": {"cost": {"min": min_cost}}}, "BTC/KRW": {"limits": {"cost": {"min": 5000.0}}}}
+
+    def fetch_ohlcv(self, symbol, timeframe, limit=200):
+        d = self.df
+        last = d.iloc[-1:].copy()                            # 진행 중 봉(봇이 버림)
+        last.index = last.index + (d.index[1] - d.index[0])
+        d = d.iloc[-(limit - 1):]
+        import pandas as pd
+        full = pd.concat([d, last])
+        return [[int(t.timestamp() * 1000), r.open, r.high, r.low, r.close, getattr(r, "volume", 100.0)] for t, r in full.iterrows()]
+
+    def fetch_ticker(self, symbol):
+        return {"last": float(self.df["close"].iloc[-1])}
+
+    def fetch_balance(self):
+        return {"BTC": {"free": self.base_free}, "USDT": {"free": self.quote_free}, "KRW": {"free": self.quote_free}}
+
+    def amount_to_precision(self, symbol, amount):
+        return f"{amount:.6f}"
+
+    def create_order(self, symbol, typ, side, amount, price=None, params=None):
+        self.orders.append((side, float(amount), price))
+        return {"id": "x"}
+
+
+def _spot_args(strategy="chandelier", live=False, budget=0.0, alloc=1.0, symbol="BTC/USDT", exchange="binance"):
+    from crypto import spot_bot
+    argv = ["--exchange", exchange, "--symbol", symbol, "--strategy", strategy, "--timeframe", "1d", "--alloc", str(alloc)]
+    if live:
+        argv += ["--live", "--budget", str(budget)]
+    elif budget:
+        argv += ["--budget", str(budget)]
+    return spot_bot.parse_args(argv)
+
+
+def test_spotbot_paper_chandelier_buy_once_then_sell_no_orders(tmp_path):
+    from crypto import spot_bot
+    df = _chan_df(n=400)
+    up, dn = df.iloc[:180], df
+    sent, path = [], str(tmp_path / "s.json")
+    args = _spot_args()
+    ex = _FakeEx(up)
+    st = spot_bot.run_once(ex, args, sent.append, path)
+    assert st["paper_long"] is True and ex.orders == [] and "(모의) 매수" in sent[-1]
+    n = len(sent)
+    spot_bot.run_once(ex, args, sent.append, path)                      # 같은 봉 → 다시 판단 안 함
+    assert len(sent) == n
+    ex2 = _FakeEx(dn)
+    st = spot_bot.run_once(ex2, args, sent.append, path)
+    assert st["paper_long"] is False and "(모의) 매도" in sent[-1] and ex2.orders == []
+
+
+def test_spotbot_live_buys_within_budget_and_sells_all(tmp_path):
+    from crypto import spot_bot
+    df = _chan_df(n=400)
+    sent, path = [], str(tmp_path / "l.json")
+    args = _spot_args(live=True, budget=100.0, alloc=0.5)
+    ex = _FakeEx(df.iloc[:180], quote_free=1000.0)
+    spot_bot.run_once(ex, args, sent.append, path)
+    side, amount, price = ex.orders[0]
+    assert side == "buy" and amount * price <= 100.0 * 0.5 + 1e-6 and "✅ 매수" in sent[-1]
+    ex2 = _FakeEx(df, quote_free=0.0, base_free=0.5)                     # 하락 전환 + 보유 중
+    spot_bot.run_once(ex2, args, sent.append, path)
+    assert ex2.orders[0][0] == "sell" and abs(ex2.orders[0][1] - 0.5) < 1e-9
+
+
+def test_spotbot_live_guards_and_min_order_skip(tmp_path):
+    import pytest
+    from crypto import spot_bot
+    with pytest.raises(SystemExit):
+        spot_bot.parse_args(["--exchange", "binance", "--symbol", "BTC/USDT", "--strategy", "bb_rsi", "--live"])   # 예산 없음
+    with pytest.raises(SystemExit):
+        spot_bot.parse_args(["--exchange", "upbit", "--symbol", "BTC/USDT", "--strategy", "bb_rsi"])              # 마켓 불일치
+    with pytest.raises(SystemExit):
+        spot_bot.parse_args(["--exchange", "binance", "--symbol", "BTC/USDT", "--strategy", "bb_rsi", "--alloc", "1.5"])
+    sent = []
+    args = _spot_args(live=True, budget=2.0)                              # 예산이 최소 주문액(5) 미만
+    ex = _FakeEx(_chan_df(n=400).iloc[:180])
+    spot_bot.run_once(ex, args, sent.append, str(tmp_path / "m.json"))
+    assert ex.orders == [] and "최소 주문액" in sent[-1]
+
+
+def test_spotbot_bbrsi_stateful_entry_and_exit_and_other_strategies(tmp_path):
+    from crypto import spot_bot, bb_rsi
+    df = _bbrsi_df()
+    first = int(bb_rsi.buy_condition(df).to_numpy().nonzero()[0][0])
+    args = _spot_args(strategy="bb_rsi")
+    sent, path = [], str(tmp_path / "b.json")
+    st = spot_bot.run_once(_FakeEx(df.iloc[:first + 1]), args, sent.append, path)       # 신호 봉까지만 보임
+    assert st["paper_long"] is True and st["entry_bar"] is not None
+    st = spot_bot.run_once(_FakeEx(df), args, sent.append, path)                       # 이후 반등 → 중심선 회복 청산
+    assert st["paper_long"] is False and st["entry_bar"] is None and "(모의) 매도" in sent[-1]
+    # ema_volume 은 거래량 필터 때문에 평범한 데이터에서는 신호 없음 → 주문·기록 없음
+    ev_args = _spot_args(strategy="ema_volume")
+    st2 = spot_bot.run_once(_FakeEx(_chan_df(n=400)), ev_args, [].append, str(tmp_path / "e.json"))
+    assert st2.get("paper_long") in (None, False)
