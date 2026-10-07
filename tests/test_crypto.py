@@ -1528,4 +1528,19 @@ def test_scalp_bot_exchange_stop_and_unknown_position():
     u = _ScalpBroker(100.0)
     u.pos = {"side": "long", "contracts": 1.0, "entry": 90.0}
     assert "모르는" in sb.run_once(u, bars, {}, now, 1000.0)[0] and u.calls == []
-    assert sb.size_for(1000, 0.001)[1] == 3 and sb.size_for(1000, 0.05) == (200.0, 1)
+    assert sb.size_for(1000, 0.001)[1] == 3 and sb.size_for(1000, 0.05) == (200.0, 3)
+    n15, l15 = sb.size_for(1000, 0.01, leverage=15)
+    assert l15 == 15 and abs(n15 - 1000.0) < 1e-9                       # 15배여도 위험 1%면 크기 동일
+    assert sb.size_for(1000, 0.01, risk=0.05, leverage=15)[0] == 5000.0  # 크기는 risk 로 커짐
+    assert sb.size_for(1000, 0.08, leverage=15)[1] == 7                  # 청산가가 손절보다 가까우면 낮춤
+
+
+def test_scalp_bot_15x_message_and_loss_matches_risk():
+    from crypto import scalp_bot as sb
+    bars = _scalp_bars(1)
+    now = bars.index[-1] + pd.Timedelta(hours=1, minutes=10)
+    b = _ScalpBroker(float(bars["close"].iloc[-1]))
+    msgs = sb.run_once(b, bars, {}, now, 1000.0, risk=0.01, leverage=15)
+    _, _, qty, stop, lev = b.calls[0]
+    assert "레버리지" in msgs[0] and 1 <= lev <= 15
+    assert abs(qty * abs(b.px - stop) - 10.0) < 0.5 or qty * b.px >= 15000 - 1e-6

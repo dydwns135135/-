@@ -2,7 +2,8 @@ name: crypto-scalp-demo (ETH 1시간봉 단타 롱·숏, 데모 전용)
 
 # 데모 계좌 전용: 실거래 옵션이 없다. 매시간 1시간봉 마감 직후 한 번 판단한다.
 # 하루(한국 시간) 최대 3번 진입, 포지션이 있으면 추가 진입하지 않는다. BTC 섞기 봇과 겹치지 않게 ETH 만 거래.
-# 스케줄은 저장소 변수 SCALP_ENABLED=true 일 때만 동작(수동 실행은 항상 가능). SCALP_BUDGET(기본 1000 USDT)의 1%가 손절 1번의 손실.
+# 스케줄은 저장소 변수 SCALP_ENABLED=true 일 때만 동작(수동 실행은 항상 가능).
+# SCALP_BUDGET(기본 1000 USDT) × SCALP_RISK(기본 1%) = 손절 1번의 손실. SCALP_LEVERAGE(기본 3, 최대 20)는 거래소 레버리지.
 on:
   schedule:
     - cron: "9 * * * *"
@@ -41,6 +42,8 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           ENABLED: ${{ vars.SCALP_ENABLED }}
           BUDGET: ${{ vars.SCALP_BUDGET || '1000' }}
+          LEVERAGE: ${{ vars.SCALP_LEVERAGE || '3' }}   # 거래소 레버리지(1~20). 손절 전에 청산되면 자동으로 낮춤
+          RISK: ${{ vars.SCALP_RISK || '0.01' }}        # 손절 1번에 잃을 기준금액 비율(최대 0.05). 포지션 크기를 정함
         run: |
           if [ "${{ github.event_name }}" = "schedule" ] && [ "$ENABLED" != "true" ]; then echo "SCALP_ENABLED!=true, 건너뜀"; exit 0; fi
-          python -m crypto.scalp_bot --budget "$BUDGET"
+          python -m crypto.scalp_bot --budget "$BUDGET" --leverage "$LEVERAGE" --risk "$RISK"
