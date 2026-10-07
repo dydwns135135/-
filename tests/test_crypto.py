@@ -987,3 +987,48 @@ def test_rotation_compare_and_today_table_shapes():
     t = ro.today_table(panel[1], panel[2])
     assert "KRW-BTC".replace("KRW-", "") in set(t["종목"]) and "오늘 목표비중" in t.columns
     assert "연환산" in ro.fmt_compare(res["전체"]) and "종목" in ro.fmt_today(t)
+
+
+def _ind_df(n=700, seed=5):
+    import numpy as np
+    import pandas as pd
+    rng = np.random.default_rng(seed)
+    c = 100 * np.exp(np.cumsum(rng.normal(0.0008, 0.02, n)))
+    o = np.r_[c[0], c[:-1]]
+    idx = pd.date_range("2022-01-01", periods=n, freq="1D", tz="UTC")
+    return pd.DataFrame({"open": o, "high": np.maximum(o, c) * 1.01, "low": np.minimum(o, c) * 0.99, "close": c}, index=idx)
+
+
+def test_indicators_ichimoku_has_no_lookahead_and_warmup_is_flat():
+    from crypto import upbit_indicators as ind
+    df = _ind_df()
+    full = ind.ichimoku_cloud(df, confirm=True)
+    part = ind.ichimoku_cloud(df.iloc[:500], confirm=True)
+    assert (full.iloc[:500].to_numpy() == part.to_numpy()).all()   # 뒤 데이터를 바꿔도 과거 신호 불변
+    assert (full.iloc[:77] == 0).all()                             # 52+26일 전엔 구름이 없어 보유 안 함
+    assert set(full.unique()) <= {0.0, 1.0}
+
+
+def test_indicators_bollinger_modes_enter_on_expected_side_and_stepped_hysteresis():
+    import pandas as pd
+    from crypto import upbit_indicators as ind
+    idx = pd.date_range("2024-01-01", periods=60, freq="1D", tz="UTC")
+    flat = [100.0] * 40
+    up = pd.DataFrame({"close": flat + [130.0] * 20}, index=idx)
+    for col in ("open", "high", "low"):
+        up[col] = up["close"]
+    assert ind.bollinger(up, "breakout").iloc[40] == 1.0 and ind.bollinger(up, "revert").iloc[40] == 0.0
+    dn = up.copy()
+    dn["close"] = flat + [70.0] * 20
+    assert ind.bollinger(dn, "revert").iloc[40] == 1.0 and ind.bollinger(dn, "breakout").iloc[40] == 0.0
+    w = pd.Series([0.0, 0.75, 0.875, 0.5, 0.0, 0.25], index=range(6))
+    assert list(ind.stepped(w, 0.25)) == [0.0, 0.75, 0.75, 0.5, 0.0, 0.25]
+
+
+def test_indicators_compare_shape_and_format():
+    from crypto import upbit_indicators as ind
+    df = _ind_df(n=900)
+    tbl = ind.compare(df)
+    assert len(tbl) == 1 + len(ind.STRATEGIES) and {"연환산", "최대낙폭", "샤프", "연거래", "평균투입"} <= set(tbl.columns)
+    recent = ind.compare(df, "2023-06-01")
+    assert len(recent) == len(tbl) and "연환산" in ind.fmt(recent)
