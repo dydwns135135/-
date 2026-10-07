@@ -200,7 +200,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     if a.live and os.environ.get("MOMENTUM_CONFIRM_LIVE") != "yes":
         raise SystemExit("실거래는 MOMENTUM_CONFIRM_LIVE=yes 환경변수가 필요합니다.")
-    mode = "실거래" if a.live else "데모"
+    mode = ("실거래" if a.live else "데모") + ("·점검" if a.check else "")
     from .exchange import BitgetFutures
     try:
         broker = BitgetFutures.from_env(a.symbol, 1, demo=not a.live)  # 레버리지 1배 고정

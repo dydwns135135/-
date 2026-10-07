@@ -1544,3 +1544,16 @@ def test_scalp_bot_15x_message_and_loss_matches_risk():
     _, _, qty, stop, lev = b.calls[0]
     assert "레버리지" in msgs[0] and 1 <= lev <= 15
     assert abs(qty * abs(b.px - stop) - 10.0) < 0.5 or qty * b.px >= 15000 - 1e-6
+
+
+def test_configure_live_uses_unified_account_api_by_default(monkeypatch):
+    import ccxt
+    from crypto.exchange import configure_live
+    ex = ccxt.bitget({"options": {"defaultType": "swap"}})
+    monkeypatch.delenv("BITGET_UTA", raising=False)
+    configure_live(ex)
+    assert ex.options["uta"] is True                         # 실계좌 통합 계정: 40085 방지
+    assert "PAPTRADING" not in (ex.headers or {})            # 실계좌에는 데모 헤더 없음
+    monkeypatch.setenv("BITGET_UTA", "0")
+    configure_live(ex)
+    assert ex.options["uta"] is False                        # 일반(Classic) 계정이면 끌 수 있음
