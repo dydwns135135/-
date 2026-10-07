@@ -1170,3 +1170,44 @@ def test_futsig_alert_flow_new_signal_then_result_and_tally(tmp_path):
     sent.clear()
     fs.run_alert(only_btc, sent.append, str(tmp_path / "t.json"), df.index[-1] + pd.Timedelta(hours=10))
     assert not sent
+
+
+def test_emavol_cross_needs_volume_and_positions_follow_signals():
+    import numpy as np
+    import pandas as pd
+    from crypto import ema_volume as ev
+    n = 400
+    idx = pd.date_range("2024-01-01", periods=n, freq="1h", tz="UTC")
+    c = np.r_[np.linspace(200, 100, 200), np.linspace(100, 200, 200)]   # 하락 후 상승 → 아래→위 교차 1번
+    o = np.r_[c[0], c[:-1]]
+    vol = np.full(n, 100.0)
+    df = pd.DataFrame({"open": o, "high": np.maximum(o, c) + 0.1, "low": np.minimum(o, c) - 0.1, "close": c, "volume": vol}, index=idx)
+    b, s = ev.buy_sell(df)
+    assert b.sum() == 0 and s.sum() == 0                     # 거래량이 평범하면 교차해도 신호 없음
+    cross = int(np.flatnonzero(((pd.Series(c).ewm(span=20, adjust=False).mean() > pd.Series(c).ewm(span=50, adjust=False).mean())
+                                & (pd.Series(c).ewm(span=20, adjust=False).mean().shift(1) <= pd.Series(c).ewm(span=50, adjust=False).mean().shift(1))).to_numpy())[-1])
+    df.loc[df.index[cross], "volume"] = 1000.0               # 교차한 봉에 거래량 폭증
+    b, s = ev.buy_sell(df)
+    assert b.iloc[cross] and b.sum() == 1
+    ls = ev.positions(b, pd.Series(False, index=idx), True)
+    assert ls.iloc[cross - 1] == 0 and ls.iloc[cross] == 1 and ls.iloc[-1] == 1
+    sell = pd.Series(False, index=idx)
+    sell.iloc[cross + 50] = True
+    assert ev.positions(b, sell, True).iloc[cross + 50] == -1 and ev.positions(b, sell, False).iloc[cross + 50] == 0
+
+
+def test_emavol_compare_shape_and_costs_hurt_flipping():
+    import numpy as np
+    import pandas as pd
+    from crypto import ema_volume as ev
+    rng = np.random.default_rng(2)
+    n = 3000
+    c = 100 * np.exp(np.cumsum(rng.normal(0, 0.01, n)))
+    o = np.r_[c[0], c[:-1]]
+    idx = pd.date_range("2023-01-01", periods=n, freq="1h", tz="UTC")
+    df = pd.DataFrame({"open": o, "high": np.maximum(o, c) * 1.002, "low": np.minimum(o, c) * 0.998, "close": c,
+                       "volume": rng.exponential(100, n)}, index=idx)
+    t = ev.compare(df, "1h")
+    assert len(t) == 6 and {"연환산", "최대낙폭", "샤프", "거래횟수", "평균투입"} <= set(t.columns)
+    assert t.loc["롱+숏 전체", "거래횟수"] > 0 and "보유 전체" in ev.fmt(t)
+    assert sum(ev.signal_counts(df)) > 0
