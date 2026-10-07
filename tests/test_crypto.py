@@ -1261,3 +1261,36 @@ def test_bbrsi_r_variant_and_formatting():
     assert s["신호수"] >= 1 and "연환산(복리)" in br.fmt_mid({"T": s})
     assert br.stats_mid(br.backtest_mid_exit(df, "T").iloc[0:0], 1.0)["신호수"] == 0
     assert "승률" in fs.fmt_summary({"T": fs.summarize(tr, 30)})
+
+def _chan_df(n=400, seed=9):
+    import numpy as np
+    import pandas as pd
+    rng = np.random.default_rng(seed)
+    t = np.arange(n)
+    c = 100 + np.where(t < 200, t * 0.5, 100 - (t - 200) * 0.5) + np.cumsum(rng.normal(0, 0.2, n))   # 상승 후 하락
+    o = np.r_[c[0], c[:-1]]
+    idx = pd.date_range("2024-01-01", periods=n, freq="1D", tz="UTC")
+    return pd.DataFrame({"open": o, "high": np.maximum(o, c) + 0.3, "low": np.minimum(o, c) - 0.3, "close": c}, index=idx)
+
+
+def test_chandelier_stops_formula_and_no_lookahead_direction():
+    from crypto import chandelier as ch
+    df = _chan_df()
+    ls, ss = ch.stops(df)
+    assert (ls.dropna() < df["high"].rolling(22).max().dropna()).all()          # 롱 스탑은 최고가보다 아래
+    assert (ss.dropna() > df["low"].rolling(22).min().dropna()).all()           # 숏 스탑은 최저가보다 위
+    d_full, d_part = ch.direction(df), ch.direction(df.iloc[:300])
+    assert (d_full.iloc[:300].to_numpy() == d_part.to_numpy()).all()            # 뒤 데이터가 과거 방향을 바꾸지 않음
+    assert (d_full.iloc[:20] == 0).all()
+
+
+def test_chandelier_direction_follows_trend_and_compare_shape():
+    from crypto import chandelier as ch
+    df = _chan_df()
+    d = ch.direction(df)
+    assert d.iloc[150] == 1 and d.iloc[-1] == -1
+    t = ch.compare(df, 365, 0.001, long_short=True)
+    assert list(t.index) == ["보유 전체", "보유 뒤절반", "롱+숏 전체", "롱+숏 뒤절반", "롱만 전체", "롱만 뒤절반"]
+    spot = ch.compare(df, 365, 0.001, long_short=False)
+    assert len(spot) == 4 and "롱+숏 전체" not in spot.index
+    assert "연환산" in ch.fmt(ch.average([t, t]))
