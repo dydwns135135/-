@@ -94,8 +94,11 @@ def main() -> None:
     for c in COINS:
         ex_id, df = load_data(a.years, f"{c}/USDT:USDT", min_bars=800, timeframe="1d")
         raw[c], srcs[c] = df, ex_id
+        print(f"  {c}: {ex_id} {len(df)}봉 {df.index[0]:%Y-%m-%d}~{df.index[-1]:%Y-%m-%d}")
     dfs = align(raw)
     n = len(next(iter(dfs.values())))
+    if n <= WARM + 250:
+        raise SystemExit(f"공통 기간이 너무 짧음({n}일): 앙상블 워밍업 {WARM}일을 빼면 비교할 데이터가 부족합니다.")
     first = next(iter(dfs.values())).index
     print("데이터: " + ", ".join(f"{c}({srcs[c]})" for c in COINS) + f" | 공통 {n}일 {first[0]:%Y-%m-%d}~{first[-1]:%Y-%m-%d}, 앞 {WARM}일 제외")
     rep, corr = compare(dfs), correlations(dfs)

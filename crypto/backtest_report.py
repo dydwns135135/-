@@ -41,18 +41,24 @@ def fetch_history(ex, symbol: str, timeframe: str = "4h", years: float = 4.0, li
     return df.iloc[:-1][["open", "high", "low", "close"]]  # 마지막은 진행 중인 봉
 
 
-def load_data(years: float, symbol: str = "BTC/USDT:USDT", min_bars: int = 2000, timeframe: str = "4h"):
-    last_err = None
+def load_data(years: float, symbol: str = "BTC/USDT:USDT", min_bars: int = 2000, timeframe: str = "4h",
+              fallback_years: tuple[float, ...] = (5, 4, 3, 2)):
+    """거래소(Bitget → OKX) 순으로 시세를 받는다. 상장이 늦은 코인은 먼 과거를 요청하면 빈 결과가 올 수 있어
+    요청 기간을 줄여(fallback_years) 다시 시도한다. 실패하면 시도별 이유를 모두 보여 준다."""
+    errors: list[str] = []
+    tries = [years] + [y for y in fallback_years if y < years]
     for ex_id in ("bitget", "okx"):
-        try:
-            ex = getattr(ccxt, ex_id)({"enableRateLimit": True, "options": {"defaultType": "swap"}})
-            df = fetch_history(ex, symbol, timeframe=timeframe, years=years)
+        ex = getattr(ccxt, ex_id)({"enableRateLimit": True, "options": {"defaultType": "swap"}})
+        for y in tries:
+            try:
+                df = fetch_history(ex, symbol, timeframe=timeframe, years=y)
+            except Exception as e:  # 거래소 하나가 막혀도 다음으로
+                errors.append(f"{ex_id}/{y:g}년: {type(e).__name__}: {str(e)[:100]}")
+                continue
             if len(df) >= min_bars:
                 return ex_id, df
-            last_err = f"{ex_id}: 봉 {len(df)}개뿐"
-        except Exception as e:  # 거래소 하나가 막혀도 다음으로
-            last_err = f"{ex_id}: {type(e).__name__}: {str(e)[:150]}"
-    raise SystemExit(f"시세를 충분히 내려받지 못함 ({last_err})")
+            errors.append(f"{ex_id}/{y:g}년: 봉 {len(df)}개")
+    raise SystemExit(f"{symbol} 시세를 충분히 내려받지 못함 → " + " | ".join(errors))
 
 
 CONFIGS = [  # 미리 정한 소수의 설정 (결과를 보고 고르지 않음)
