@@ -1,0 +1,42 @@
+name: crypto-signal-alert (알림 전용: 업비트 직접 주문용 목표 비중)
+
+# 주문하지 않는다. 업비트 공개 시세로 앙상블 목표 비중을 계산해 텔레그램으로 알린다(API 키·서버·IP 등록 불필요).
+# 스케줄은 저장소 변수 ALERT_ENABLED=true 일 때만 동작(수동 실행은 항상 가능).
+on:
+  schedule:
+    - cron: "20 0 * * *"   # 업비트 일봉 마감(UTC 00:00, 한국 09:00) 직후
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-trader.txt
+      - run: pip install -r requirements-trader.txt
+
+      # 마지막으로 조정을 알린 기준 비중(signal_state.json)을 실행 사이에 보존
+      - uses: actions/cache@v4
+        with:
+          path: signal_state.json
+          key: signal-state-${{ github.run_id }}
+          restore-keys: signal-state-
+
+      - name: Alert
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ENABLED: ${{ vars.ALERT_ENABLED }}
+          CAPITAL: ${{ vars.ALERT_CAPITAL_KRW }}   # 선택: 투입 원화 금액(예: 1000000)
+          ALLOC: ${{ vars.ALERT_ALLOC || '1.0' }}  # 투입금 중 BTC 로 보유할 최대 비율
+          STEP: ${{ vars.ALERT_STEP || '0.25' }}   # 조정을 알리는 비중 차이
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$ENABLED" != "true" ]; then echo "ALERT_ENABLED!=true, 건너뜀"; exit 0; fi
+          EXTRA=""
+          if [ -n "$CAPITAL" ]; then EXTRA="--capital-krw $CAPITAL"; fi
+          python -m crypto.signal_alert --alloc "$ALLOC" --step "$STEP" $EXTRA
