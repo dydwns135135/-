@@ -1,4 +1,4 @@
-name: crypto-signal-alert (알림 전용: 업비트 직접 주문용 목표 비중)
+name: "crypto-signal-alert (알림 전용 - 업비트 직접 주문용 목표 비중)"
 
 # 주문하지 않는다. 업비트 공개 시세로 앙상블 목표 비중을 계산해 텔레그램으로 알린다(API 키·서버·IP 등록 불필요).
 # 스케줄은 저장소 변수 ALERT_ENABLED=true 일 때만 동작(수동 실행은 항상 가능).
