@@ -568,8 +568,9 @@ def test_asset_mix_load_asset_reports_all_failures(monkeypatch):
     with pytest.raises(SystemExit) as e:
         A.load_asset("QQQ")
     assert "yahoo" in str(e.value) and "stooq" in str(e.value) and "429" in str(e.value)
-    monkeypatch.setattr(A, "fetch_stooq", lambda c: synthetic_prices(10, seed=1)[["open", "close"]])
-    assert A.load_asset("GLD")[0] == "stooq"                                  # 야후 실패 → 스투크 폴백
+    daily = pd.DataFrame({"open": 1.0, "close": 1.0}, index=pd.date_range("2005-01-03", periods=1500, freq="D", tz="UTC"))
+    monkeypatch.setattr(A, "fetch_stooq", lambda c: daily)
+    assert A.load_asset("GLD")[0] == "stooq"                                  # 야후 실패 → 스투크 폴백(일봉 검사 통과)
 
 
 def test_asset_mix_check_daily_rejects_monthly_and_short_data():
