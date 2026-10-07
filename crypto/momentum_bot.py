@@ -76,22 +76,43 @@ def kill_switch(broker, equity: float, min_equity: float | None) -> list[str] | 
     return msg
 
 
-def run_once_ensemble(broker, alloc: float = 0.5, stop_loss: float | None = None,
-                      max_notional: float | None = None, min_equity: float | None = None) -> list[str]:
-    candles = broker.closed_candles("1d", limit=max(ENSEMBLE_LOOKBACKS) + 40, deep=True)
+def mix_weight(candles: pd.DataFrame) -> tuple[float, int, bool] | None:
+    """섞기(교집합): 종가가 일목 구름 위일 때만 앙상블 비중, 아래면 0. (목표 비중, 양(+) 기간 수, 구름 위 여부)"""
+    from .upbit_indicators import ichimoku_cloud
     res = ensemble_weight(candles["close"])
     if res is None:
-        return [f"일봉이 부족해 판단 보류 ({len(candles)}개, 필요 {max(ENSEMBLE_LOOKBACKS) + 1}개 이상)"]
+        return None
     w, npos = res
+    above = bool(ichimoku_cloud(candles).iloc[-1] > 0)
+    return (w if above else 0.0), npos, above
+
+
+def run_once_ensemble(broker, alloc: float = 0.5, stop_loss: float | None = None,
+                      max_notional: float | None = None, min_equity: float | None = None,
+                      mix: bool = False) -> list[str]:
+    """mix=True 면 섞기(교집합: 앙상블 × 일목 구름 위 여부), 백테스트와 같이 25%p 이상 차이일 때만 조정."""
+    candles = broker.closed_candles("1d", limit=max(ENSEMBLE_LOOKBACKS) + 40, deep=True)
+    if mix:
+        res = mix_weight(candles)
+        if res is None:
+            return [f"일봉이 부족해 판단 보류 ({len(candles)}개, 필요 {max(ENSEMBLE_LOOKBACKS) + 1}개 이상)"]
+        w, npos, above = res
+    else:
+        res = ensemble_weight(candles["close"])
+        if res is None:
+            return [f"일봉이 부족해 판단 보류 ({len(candles)}개, 필요 {max(ENSEMBLE_LOOKBACKS) + 1}개 이상)"]
+        w, npos = res
     pos = broker.position()
     current = float(pos["contracts"]) if pos else 0.0
     equity, px = broker.balance(), broker.price()
     killed = kill_switch(broker, equity, min_equity)
     if killed:
         return killed
-    act, qty = plan_rebalance(w, alloc, equity, px, current, max_notional=max_notional)
+    act, qty = plan_rebalance(w, alloc, equity, px, current, step=0.25 if mix else 0.10, max_notional=max_notional)
     head = (f"앙상블 모멘텀: {len(ENSEMBLE_LOOKBACKS)}개 기간 중 {npos}개 양(+) → 목표 비중 {w:.0%} "
             f"(잔고의 {w * alloc:.0%}), 현재 {current:.5f} BTC")
+    if mix:
+        head = ("섞기(앙상블×일목): " + head + f" · 일목 구름 {'위 → 앙상블 비중 사용' if above else '아래 → 목표 0%'}")
     if act == "buy":
         stop = px * (1 - stop_loss) if stop_loss else None
         broker.open("buy", qty, stop)
@@ -130,17 +151,47 @@ def run_once(broker, lookback: int = 90, alloc: float = 0.5, stop_loss: float | 
     return [head, "보유 유지" if pos else "현금 유지(신호 없음)"]
 
 
+class CheckBroker:
+    """점검 모드: 실제 브로커의 조회 기능은 그대로 쓰고 주문(open/close)만 가로채 기록한다."""
+    def __init__(self, broker):
+        self._b, self.blocked = broker, []
+
+    def __getattr__(self, name):
+        return getattr(self._b, name)
+
+    def open(self, side, amount, stop=None):
+        self.blocked.append(f"(주문 안 함) 진입 {side} {amount:.5f}")
+
+    def close(self, side, contracts):
+        self.blocked.append(f"(주문 안 함) 청산 {side} {contracts}")
+
+
+def check_notes(broker, notes: list[str]) -> list[str]:
+    """점검 결과 문구: 잔고·포지션·계획된 주문(실행 안 함)·진단."""
+    out = ["🔎 점검 모드: 주문하지 않고 연결·잔고·계획만 확인"] + notes
+    out += broker.blocked or ["(계획된 주문 없음)"]
+    try:
+        out.append(f"잔고 {broker.balance():,.2f} USDT · 포지션 {broker.position() or '없음'}")
+    except Exception as e:  # 조회 실패도 그대로 보여 준다
+        out.append(f"잔고/포지션 조회 실패: {type(e).__name__}: {str(e)[:150]}")
+    if hasattr(broker, "diagnose"):
+        out.append(f"진단: {str(broker.diagnose())[:300]}")
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--symbol", default="BTC/USDT:USDT")
     ap.add_argument("--lookback", type=int, default=90)
     ap.add_argument("--alloc", type=float, default=0.5, help="잔고 중 투입 비율(레버리지 1배 기준)")
     ap.add_argument("--stop-loss", type=float, default=None, help="선택: 진입가 대비 손절 비율(백테스트에는 없음)")
-    ap.add_argument("--mode", choices=["single", "ensemble"], default="single",
-                    help="single: lookback 하나 / ensemble: 30~250일 8개 기간의 양(+) 비율만큼 보유")
+    ap.add_argument("--mode", choices=["single", "ensemble", "mix"], default="single",
+                    help="single: lookback 하나 / ensemble: 30~250일 8개 기간의 양(+) 비율만큼 보유 / "
+                         "mix: 앙상블 × 일목 구름 위 여부(교집합, 25%%p 조정)")
     ap.add_argument("--max-notional", type=float, default=None, help="포지션 금액 상한(USDT). 잔고가 커도 이 금액을 넘기지 않음")
     ap.add_argument("--min-equity", type=float, default=None, help="최소 잔고(USDT). 이 아래면 전량 청산하고 신규 진입 중단")
     ap.add_argument("--live", action="store_true")
+    ap.add_argument("--check", action="store_true", help="주문하지 않고 연결·잔고·계획만 확인")
     a = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     if a.live and os.environ.get("MOMENTUM_CONFIRM_LIVE") != "yes":
@@ -149,11 +200,16 @@ def main() -> None:
     from .exchange import BitgetFutures
     try:
         broker = BitgetFutures.from_env(a.symbol, 1, demo=not a.live)  # 레버리지 1배 고정
-        notes = (run_once_ensemble(broker, a.alloc, a.stop_loss, a.max_notional, a.min_equity) if a.mode == "ensemble"
+        if a.check:
+            broker = CheckBroker(broker)
+        notes = (run_once_ensemble(broker, a.alloc, a.stop_loss, a.max_notional, a.min_equity, mix=a.mode == "mix")
+                 if a.mode in ("ensemble", "mix")
                  else run_once(broker, a.lookback, a.alloc, a.stop_loss, a.max_notional, a.min_equity))
     except Exception as e:
         notify.send(f"❌ 모멘텀봇 오류 [{mode}]: {type(e).__name__}: {str(e)[:300]}")
         raise
+    if a.check:
+        notes = check_notes(broker, notes)
     text = "\n".join(notes)
     log.info(text)
     notify.send(f"🪙 모멘텀봇 [{mode}/{a.mode}] {a.symbol}\n{text}")

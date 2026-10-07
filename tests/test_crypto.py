@@ -1397,3 +1397,40 @@ def test_spotbot_bbrsi_stateful_entry_and_exit_and_other_strategies(tmp_path):
     ev_args = _spot_args(strategy="ema_volume")
     st2 = spot_bot.run_once(_FakeEx(_chan_df(n=400)), ev_args, [].append, str(tmp_path / "e.json"))
     assert st2.get("paper_long") in (None, False)
+
+
+def test_momentum_check_mode_blocks_orders_and_reports():
+    from crypto.momentum_bot import CheckBroker, check_notes, run_once_ensemble
+    up = list(np.linspace(100, 400, 320))
+    real = _EnsBroker(up)
+    cb = CheckBroker(real)
+    notes = run_once_ensemble(cb, 1.0, max_notional=150)
+    assert real.calls == [] and cb.blocked and "주문 안 함" in cb.blocked[0]
+    out = check_notes(cb, notes)
+    assert out[0].startswith("🔎 점검 모드") and any("잔고" in x for x in out)
+    down = list(np.linspace(400, 100, 320))
+    real2 = _EnsBroker(down, pos={"side": "long", "contracts": 1.0, "entry": 300.0})
+    cb2 = CheckBroker(real2)
+    run_once_ensemble(cb2, 1.0)
+    assert real2.calls == [] and "청산" in cb2.blocked[0]
+
+
+def test_momentum_mix_mode_follows_ensemble_above_cloud_and_exits_below():
+    from crypto.momentum_bot import mix_weight, run_once_ensemble
+    up = list(np.linspace(100, 400, 320))
+    b = _EnsBroker(up)
+    w, npos, above = mix_weight(b.df)
+    assert above and w == 1.0 and npos == 8
+    run_once_ensemble(b, 0.5, mix=True)
+    assert b.calls[0][:2] == ("open", "buy") and abs(b.calls[0][2] - 10000 * 0.5 / 400) < 1e-4
+    # 오래 오른 뒤 최근 급락: 긴 기간은 아직 +라 앙상블은 비중 유지, 가격은 일목 구름 아래 → 섞기는 0%
+    path = list(np.linspace(100, 400, 300)) + list(np.linspace(400, 280, 25))
+    pos = {"side": "long", "contracts": 12.5, "entry": 380.0}
+    ens = _EnsBroker(path, pos=dict(pos))
+    run_once_ensemble(ens, 0.5)
+    assert not any(c[0] == "close" and c[2] == 12.5 for c in ens.calls)      # 앙상블은 전량 청산 아님
+    mixb = _EnsBroker(path, pos=dict(pos))
+    w2, _, above2 = mix_weight(mixb.df)
+    assert not above2 and w2 == 0.0
+    notes = run_once_ensemble(mixb, 0.5, mix=True)
+    assert mixb.calls == [("close", "long", 12.5)] and "구름 아래" in notes[0]
