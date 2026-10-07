@@ -773,3 +773,83 @@ def test_stress_grid_shape_and_stats_on_synthetic_data():
     assert (t["최종잔고(배)"] >= 0).all() and "파산" in fmt(t)
     one = t[(t["레버리지"] == "1배") & (t["손절폭"] == "없음")].iloc[0]
     assert one["청산횟수"] == 0 and one["손절횟수"] == 0                          # 1배·손절 없음·롱만은 청산·손절이 없다
+
+
+def _upbit_rows(n, start="2024-01-01"):
+    """업비트 응답 형태(최신순)의 가짜 일봉 JSON."""
+    days = pd.date_range(start, periods=n, freq="D")
+    rows = [{"candle_date_time_utc": d.strftime("%Y-%m-%dT00:00:00"), "opening_price": 100.0 + i, "high_price": 102.0 + i,
+             "low_price": 98.0 + i, "trade_price": 101.0 + i} for i, d in enumerate(days)]
+    return rows[::-1]
+
+
+def test_upbit_parse_and_paginate_backwards_without_gaps():
+    from crypto.upbit_data import fetch_upbit_daily, parse_upbit
+
+    allrows = _upbit_rows(450)
+    df = parse_upbit(allrows)
+    assert len(df) == 450 and df.index.is_monotonic_increasing and df["close"].iloc[0] == 101.0 and df["open"].iloc[-1] == 100.0 + 449
+
+    calls = []
+    class R:
+        status_code = 200
+        text = ""
+        def __init__(self, j): self._j = j
+        def json(self): return self._j
+    def fake_get(url, params=None, headers=None, timeout=0):
+        calls.append(dict(params))
+        pool = allrows if "to" not in params else [r for r in allrows if r["candle_date_time_utc"] + "Z" < params["to"]]
+        return R(pool[:params["count"]])
+    out = fetch_upbit_daily("KRW-BTC", total=450, get=fake_get, sleep=lambda s: None)
+    assert len(out) == 450 and out.index.is_monotonic_increasing and not out.index.duplicated().any()
+    assert "to" not in calls[0] and "to" in calls[1] and len(calls) == 3   # 200 + 200 + 50
+
+    import pytest
+    class Bad(R):
+        status_code = 429
+        text = "Too Many"
+    with pytest.raises(RuntimeError, match="429"):
+        fetch_upbit_daily("KRW-BTC", get=lambda *a, **k: Bad([]), sleep=lambda s: None)
+
+
+def test_upbit_closed_only_drops_in_progress_candle():
+    from crypto.upbit_data import closed_only, parse_upbit
+
+    df = parse_upbit(_upbit_rows(5, "2024-01-01"))                       # 1/1 ~ 1/5
+    now = pd.Timestamp("2024-01-05T12:00:00", tz="UTC")                  # 1/5 봉은 아직 진행 중
+    assert closed_only(df, now).index[-1] == pd.Timestamp("2024-01-04", tz="UTC")
+    assert closed_only(df, pd.Timestamp("2024-01-06T00:00:00", tz="UTC")).index[-1] == pd.Timestamp("2024-01-05", tz="UTC")
+
+
+def test_upbit_backtest_compare_shape_and_fewer_adjustments_with_larger_step():
+    from crypto.upbit_backtest import compare, fmt
+
+    df = synthetic_prices(1600, seed=61, vol=0.025)
+    t = compare(df, None)
+    assert len(t) == 4 and list(t["전략"])[0] == "BTC 보유(원화)"
+    steps = t.iloc[1:]["조정횟수"].tolist()
+    assert steps[0] >= steps[1] >= steps[2] and steps[0] > steps[2]       # 임계가 클수록 주문이 줄어든다
+    assert t.iloc[0]["조정횟수"] == 1 and "연평균조정" in fmt(t)             # 보유는 첫 진입 1번
+
+
+def test_signal_alert_decisions_state_and_message(tmp_path):
+    from crypto.signal_alert import build_message, decide_alert, load_state, save_state
+
+    assert decide_alert(0.5, None) == "init" and decide_alert(0.0, None) == "hold"
+    assert decide_alert(0.75, 0.50) == "adjust" and decide_alert(0.625, 0.50) == "hold"      # 25%p 이상일 때만
+    assert decide_alert(0.0, 0.125) == "adjust"                                             # 0 으로 돌아가면 작은 차이도 조정
+    assert decide_alert(0.375, 0.625) == "adjust" and decide_alert(1.0, 1.0) == "hold"
+    p = tmp_path / "s.json"
+    assert load_state(p) is None
+    save_state(p, 0.75)
+    assert load_state(p) == 0.75
+    p.write_text("not json")
+    assert load_state(p) is None                                                            # 손상된 상태 파일은 무시
+
+    closes = pd.Series([1.0])
+    m = build_message(0.5, 4, 0.75, "adjust", 100_000_000, closes, 1_000_000, 1.0)
+    assert "조정 필요: 일부 매도 약 250,000원" in m and "목표 보유 금액 500,000원" in m and "0.005000 BTC" in m
+    m0 = build_message(0.0, 0, 0.25, "adjust", 100_000_000, closes, None, 1.0)
+    assert "전량 매도" in m0 and "비중 25%p" in m0
+    mh = build_message(0.75, 6, 0.75, "hold", 100_000_000, closes, 2_000_000, 0.5)
+    assert mh.startswith("조정 없음") and "750,000원" in mh                                  # 2,000,000 × 50% × 75%
