@@ -1,0 +1,41 @@
+name: crypto-futures-signal (선물 단타 신호 알림 - 알림 전용)
+
+# 주문하지 않는다. Bitget 공개 시세로 신호를 찾아 텔레그램으로 알리고, 신호 결과를 기록해 성적표를 보낸다.
+# 스케줄은 저장소 변수 FUTSIG_ENABLED=true 일 때만 동작(수동 실행은 항상 가능).
+on:
+  schedule:
+    - cron: "7 * * * *"      # 매시간(1시간봉 마감 직후, Actions 지연이 있을 수 있음)
+  workflow_dispatch:
+
+concurrency:
+  group: futures-signal
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-trader.txt
+      - run: pip install -r requirements-trader.txt
+
+      # 진행 중인 신호와 결과 기록(signals_state.json)을 실행 사이에 보존
+      - uses: actions/cache@v4
+        with:
+          path: signals_state.json
+          key: futsig-state-${{ github.run_id }}
+          restore-keys: futsig-state-
+
+      - name: Signal
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ENABLED: ${{ vars.FUTSIG_ENABLED }}
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$ENABLED" != "true" ]; then echo "FUTSIG_ENABLED!=true, 건너뜀"; exit 0; fi
+          python -m crypto.futures_signal --alert

@@ -1055,3 +1055,118 @@ def test_mix_compare_average_and_format():
     avg = mx.average([a, a])
     assert abs(avg.loc["보유", "연환산"] - a.loc["보유", "연환산"]) < 1e-12
     assert "섞기: 평균" in mx.fmt(avg)
+
+
+def _fs_df(n=400, seed=11, spike_at=None, side=1):
+    import numpy as np
+    import pandas as pd
+    rng = np.random.default_rng(seed)
+    c = 100 + np.cumsum(rng.normal(0, 0.15, n))
+    v = np.full(n, 100.0) + rng.normal(0, 5, n)
+    if spike_at is not None:
+        c[spike_at:] += side * 6.0          # 큰 돌파
+        v[spike_at] = 500.0                 # 거래량 폭증
+    o = np.r_[c[0], c[:-1]]
+    idx = pd.date_range("2024-01-01", periods=n, freq="1h", tz="UTC")
+    return pd.DataFrame({"open": o, "high": np.maximum(o, c) + 0.1, "low": np.minimum(o, c) - 0.1, "close": c, "volume": v}, index=idx)
+
+
+def test_futsig_signals_require_breakout_volume_and_trend_both_sides():
+    from crypto import futures_signal as fs
+    up = fs.prepare(_fs_df(spike_at=300, side=1))
+    s_up = fs.signals(up)
+    assert s_up.iloc[300] == 1
+    dn = fs.prepare(_fs_df(spike_at=300, side=-1))
+    assert fs.signals(dn).iloc[300] == -1
+    # 거래량이 평범하면 돌파여도 신호 없음
+    no_vol = _fs_df(spike_at=300, side=1)
+    no_vol["volume"] = 100.0
+    assert fs.signals(fs.prepare(no_vol)).iloc[300] == 0
+    assert (fs.signals(up).iloc[:fs.MIN_BARS] == 0).all()
+
+
+def test_futsig_plan_leverage_is_risk_based_and_capped():
+    from crypto import futures_signal as fs
+    p = fs.plan(100.0, 0.4, 1)           # 손절폭 0.6% → 레버 1%/0.6% ≈ 1.6배
+    assert abs(p["stop"] - 99.4) < 1e-9 and abs(p["tp1"] - 100.9) < 1e-9 and abs(p["tp2"] - 101.8) < 1e-9
+    assert abs(p["leverage"] - 1.6) < 1e-9
+    assert fs.plan(100.0, 0.1, 1)["leverage"] == fs.LEV_CAP          # 손절폭이 아주 작아도 3배 상한
+    s = fs.plan(100.0, 0.4, -1)
+    assert s["stop"] > 100 and s["tp1"] < 100 and s["tp2"] < s["tp1"] and s["liq"] > 100
+    assert fs.plan(100.0, 4.0, 1)["leverage"] < 1.0                  # 손절폭이 넓으면 1배 미만
+
+
+def test_futsig_resolve_stop_first_partial_and_timeout():
+    import pandas as pd
+    from crypto import futures_signal as fs
+
+    def bars(rows):
+        return pd.DataFrame(rows, columns=["high", "low", "close"])
+    r = 1.0
+    # 같은 봉에서 목표와 손절이 모두 닿으면 손절 우선
+    assert fs.resolve(1, 100, r, bars([(102, 98.5, 100)]))["status"] == "손절"
+    # 목표1(절반) 후 목표2
+    res = fs.resolve(1, 100, r, bars([(101.6, 99.8, 101), (103.1, 101, 103)]))
+    assert res["status"] == "목표2" and abs(res["r"] - (0.75 + 1.5)) < 1e-9
+    # 목표1 후 손절: 0.75 - 0.5
+    res = fs.resolve(1, 100, r, bars([(101.6, 99.8, 101), (101, 98.9, 99)]))
+    assert res["status"] == "목표1후손절" and abs(res["r"] - 0.25) < 1e-9
+    # 숏 대칭
+    assert fs.resolve(-1, 100, r, bars([(101.2, 99, 100)]))["status"] == "손절"
+    # 진행중 / 시간초과
+    assert fs.resolve(1, 100, r, bars([(100.5, 99.5, 100)] * 5))["status"] == "진행중"
+    to = fs.resolve(1, 100, r, bars([(100.5, 99.5, 100.2)] * fs.TIMEOUT))
+    assert to["status"] == "시간초과" and abs(to["r"] - 0.2) < 1e-9
+
+
+def test_futsig_backtest_no_overlap_and_costs_reduce_r():
+    import numpy as np
+    import pandas as pd
+    from crypto import futures_signal as fs
+    df = _fs_df(n=2000, seed=3)
+    c = df["close"].to_numpy().copy()
+    v = df["volume"].to_numpy().copy()
+    for k in (300, 600, 900, 1200, 1500):   # 돌파+거래량 폭증을 여러 번 심는다
+        c[k:] += 6.0
+        v[k] = 500.0
+    o = np.r_[c[0], c[:-1]]
+    df = pd.DataFrame({"open": o, "high": np.maximum(o, c) + 0.1, "low": np.minimum(o, c) - 0.1, "close": c, "volume": v}, index=df.index)
+    tr = fs.backtest_symbol(df, "TEST/USDT:USDT")
+    assert len(tr) >= 3
+    assert (tr["net_r"] < tr["gross_r"]).all()
+    t = tr.sort_values("time")
+    assert (t["time"].iloc[1:].to_numpy() > t["exit"].iloc[:-1].to_numpy()).all()
+    s = fs.summarize(tr, 80)
+    assert s["신호수"] == len(tr) and "승률" in fs.fmt_summary({"전체": s})
+    assert fs.summarize(tr.iloc[0:0], 10)["신호수"] == 0
+
+
+def test_futsig_alert_flow_new_signal_then_result_and_tally(tmp_path):
+    import pandas as pd
+    from crypto import futures_signal as fs
+    df = _fs_df(n=300, spike_at=299, side=1)          # 마지막 봉에서 돌파
+    sent = []
+    state_path = str(tmp_path / "s.json")
+    now = df.index[-1] + pd.Timedelta(hours=1, minutes=5)
+    only_btc = lambda s: df if s.startswith("BTC") else None
+    st1 = fs.run_alert(only_btc, sent.append, state_path, now)
+    assert len(st1["open"]) == 1 and "롱" in sent[0] and "권장 레버리지" in sent[0] and "손절" in sent[0]
+    n = len(sent)
+    fs.run_alert(only_btc, sent.append, state_path, now)           # 같은 신호 중복 알림 없음
+    assert len(sent) == n
+    # 이후 봉에서 목표2 도달 → 결과 알림 + 성적표
+    ent = st1["open"][0]
+    nxt_idx = pd.date_range(df.index[-1] + pd.Timedelta(hours=1), periods=3, freq="1h", tz="UTC")
+    top = ent["entry"] + 3.2 * ent["r"]
+    more = pd.DataFrame({"open": [ent["entry"]] * 3, "high": [ent["entry"] + 1.6 * ent["r"], top, top],
+                         "low": [ent["entry"] - 0.1 * ent["r"]] * 3, "close": [ent["entry"] + 1.0 * ent["r"]] * 3,
+                         "volume": [100.0] * 3}, index=nxt_idx)
+    df2 = pd.concat([df, more])
+    st2 = fs.run_alert(lambda s: df2 if s.startswith("BTC") else None, sent.append, state_path, df2.index[-1] + pd.Timedelta(hours=1, minutes=5))
+    assert not st2["open"] and len(st2["done"]) == 1 and st2["done"][0]["status"] == "목표2"
+    assert any("신호 결과" in m and "누적 1건" in m for m in sent)
+    assert fs.load_state(state_path)["done"][0]["symbol"].startswith("BTC")
+    # 시세가 오래되면 새 신호 알림 안 함
+    sent.clear()
+    fs.run_alert(only_btc, sent.append, str(tmp_path / "t.json"), df.index[-1] + pd.Timedelta(hours=10))
+    assert not sent

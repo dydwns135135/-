@@ -1,0 +1,28 @@
+name: crypto-futures-signal-backtest (선물 단타 신호 규칙 백테스트)
+
+# 공개 시세만 사용(API 키·주문 없음). 신호 규칙이 비용을 빼고도 남는지 숫자로 확인한다.
+on:
+  workflow_dispatch:
+    inputs:
+      years:
+        description: "과거 몇 년치(1시간봉)"
+        default: "3"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-trader.txt
+      - run: pip install -r requirements-trader.txt
+      - name: Backtest
+        run: python -m crypto.futures_signal --backtest --years "${{ github.event.inputs.years || '3' }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: futures-signal-backtest
+          path: data/

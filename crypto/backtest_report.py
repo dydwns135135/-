@@ -19,7 +19,7 @@ TF_MS = 4 * 3600 * 1000
 
 
 def fetch_history(ex, symbol: str, timeframe: str = "4h", years: float = 4.0, limit: int = 200,
-                  max_calls: int = 400) -> pd.DataFrame:
+                  max_calls: int = 400, keep_volume: bool = False) -> pd.DataFrame:
     """since 를 앞으로 밀며 과거부터 현재까지 캔들을 이어 받는다."""
     since = int(time.time() * 1000) - int(years * 365 * 24 * 3600 * 1000)
     rows, calls = [], 0
@@ -38,11 +38,12 @@ def fetch_history(ex, symbol: str, timeframe: str = "4h", years: float = 4.0, li
     df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "volume"])
     df.index = pd.to_datetime(df.pop("ts"), unit="ms", utc=True)
     df = df[~df.index.duplicated()].sort_index()
-    return df.iloc[:-1][["open", "high", "low", "close"]]  # 마지막은 진행 중인 봉
+    cols = ["open", "high", "low", "close"] + (["volume"] if keep_volume else [])
+    return df.iloc[:-1][cols]  # 마지막은 진행 중인 봉
 
 
 def load_data(years: float, symbol: str = "BTC/USDT:USDT", min_bars: int = 2000, timeframe: str = "4h",
-              fallback_years: tuple[float, ...] = (5, 4, 3, 2)):
+              fallback_years: tuple[float, ...] = (5, 4, 3, 2), keep_volume: bool = False):
     """거래소(Bitget → OKX) 순으로 시세를 받는다. 상장이 늦은 코인은 먼 과거를 요청하면 빈 결과가 올 수 있어
     요청 기간을 줄여(fallback_years) 다시 시도한다. 실패하면 시도별 이유를 모두 보여 준다."""
     errors: list[str] = []
@@ -51,7 +52,7 @@ def load_data(years: float, symbol: str = "BTC/USDT:USDT", min_bars: int = 2000,
         ex = getattr(ccxt, ex_id)({"enableRateLimit": True, "options": {"defaultType": "swap"}})
         for y in tries:
             try:
-                df = fetch_history(ex, symbol, timeframe=timeframe, years=y)
+                df = fetch_history(ex, symbol, timeframe=timeframe, years=y, keep_volume=keep_volume)
             except Exception as e:  # 거래소 하나가 막혀도 다음으로
                 errors.append(f"{ex_id}/{y:g}년: {type(e).__name__}: {str(e)[:100]}")
                 continue
