@@ -32,9 +32,11 @@ def configure_live(ex: ccxt.Exchange) -> None:
 
 class BitgetFutures:
     def __init__(self, ex: ccxt.Exchange, symbol: str, leverage: int,
-                 data_symbol: str | None = None, demo: bool = False):
-        """symbol: 주문 종목, data_symbol: 시세/캔들용 종목(기본 symbol 과 동일)."""
+                 data_symbol: str | None = None, demo: bool = False, data_ex: ccxt.Exchange | None = None):
+        """symbol: 주문 종목, data_symbol: 시세/캔들용 종목(기본 symbol 과 동일).
+        data_ex: 시세/캔들을 받을 거래소 객체(기본은 주문용 ex). 데모는 실제 시장 공개 시세를 쓴다."""
         self.ex, self.symbol, self.leverage = ex, symbol, leverage
+        self.data_ex = data_ex or ex
         self.data_symbol, self.demo = data_symbol or symbol, demo
         self.setup_errors: list[str] = []  # 격리마진/레버리지 설정 실패 기록(진단용)
         self.hedged: bool | None = None  # 계좌 포지션 모드: 주문이 성공한 방식으로 학습(None=아직 모름)
@@ -51,19 +53,22 @@ class BitgetFutures:
         })
         if demo:
             # 데모: 일반 종목(BTC/USDT:USDT) + USDT 증거금 + PAPTRADING 헤더 + 통합 계정(UTA) API.
+            # 판단용 시세는 실제 시장 공개 데이터 — 데모 서버 일봉의 고가·저가에 비정상 값이 섞여
+            # 일목 구름 상단이 127,642(실제 75,779)로 계산된 적이 있다(2026-10-07 run #8).
             configure_demo(ex)
-            return cls(ex, symbol, leverage, demo=True)
+            public = ccxt.bitget({"options": {"defaultType": "swap"}, "enableRateLimit": True})
+            return cls(ex, symbol, leverage, demo=True, data_ex=public)
         configure_live(ex)
         return cls(ex, symbol, leverage)
 
     def closed_candles(self, timeframe: str, limit: int = 300, deep: bool = False) -> pd.DataFrame:
         """마감된 봉만. deep=True 는 기간(since)을 지정해 과거 봉을 이어 받는다 — Bitget 의 기본 캔들 조회는
         일봉을 최근 ~90개까지만 주므로(run: 89개), 90일 이상 필요한 규칙은 deep 으로 받는다."""
-        dur_ms = int(self.ex.parse_timeframe(timeframe) * 1000)
+        dur_ms = int(self.data_ex.parse_timeframe(timeframe) * 1000)
         if deep:
             since, rows = self._now_ms() - (limit + 2) * dur_ms, []
             for _ in range(8):
-                batch = self.ex.fetch_ohlcv(self.data_symbol, timeframe, since=since, limit=min(limit + 2, 200))
+                batch = self.data_ex.fetch_ohlcv(self.data_symbol, timeframe, since=since, limit=min(limit + 2, 200))
                 new = [r for r in batch if not rows or r[0] > rows[-1][0]]
                 if not new:
                     break
@@ -72,7 +77,7 @@ class BitgetFutures:
                 if rows[-1][0] + dur_ms >= self._now_ms():  # 현재 봉까지 도달
                     break
         else:
-            rows = self.ex.fetch_ohlcv(self.data_symbol, timeframe, limit=limit)
+            rows = self.data_ex.fetch_ohlcv(self.data_symbol, timeframe, limit=limit)
         closed = [r for r in rows if r[0] + dur_ms <= self._now_ms()]  # 시각이 지나 마감된 봉만
         df = pd.DataFrame(closed, columns=["ts", "open", "high", "low", "close", "volume"])
         df.index = pd.to_datetime(df.pop("ts"), unit="ms", utc=True)
@@ -84,7 +89,7 @@ class BitgetFutures:
         return int(time.time() * 1000)
 
     def price(self) -> float:
-        return float(self.ex.fetch_ticker(self.data_symbol)["last"])
+        return float(self.data_ex.fetch_ticker(self.data_symbol)["last"])
 
     def _bal_params(self) -> tuple[dict, str]:
         return {}, "USDT"  # 데모도 일반 종목·USDT 증거금(Bitget 데모 화면: BTCUSDT, USDT 잔고)
