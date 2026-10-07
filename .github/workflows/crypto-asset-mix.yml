@@ -1,0 +1,24 @@
+name: crypto-asset-mix (BTC·나스닥100·금 장기 분산 검증)
+
+# 공개 시세만 사용(API 키·주문 없음). Yahoo/Stooq 에서 장기 일봉을 받아 앙상블 모멘텀의 분산 효과를 확인한다.
+on:
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-trader.txt
+      - run: pip install -r requirements-trader.txt
+      - name: Asset mix
+        run: python -m crypto.asset_mix
+      - uses: actions/upload-artifact@v4
+        with:
+          name: asset-mix
+          path: data/
