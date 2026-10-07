@@ -1032,3 +1032,26 @@ def test_indicators_compare_shape_and_format():
     assert len(tbl) == 1 + len(ind.STRATEGIES) and {"연환산", "최대낙폭", "샤프", "연거래", "평균투입"} <= set(tbl.columns)
     recent = ind.compare(df, "2023-06-01")
     assert len(recent) == len(tbl) and "연환산" in ind.fmt(recent)
+
+
+def test_mix_weights_bounds_and_relationships():
+    from crypto import upbit_indicators as ind
+    from crypto import upbit_mix as mx
+    from crypto.strategies import momentum_ensemble
+    df = _ind_df(n=900)
+    w = mx.raw_weights(df)
+    assert set(w) == {"앙상블(25%p)", "일목 구름 위", "섞기: 평균", "섞기: 교집합"}
+    for s in w.values():
+        assert s.min() >= 0.0 and s.max() <= 1.0
+    ens, ichi = momentum_ensemble(df), ind.ichimoku_cloud(df)
+    raw_and = (ens * ichi)
+    assert (raw_and <= ens + 1e-12).all() and (raw_and <= ichi + 1e-12).all()
+
+
+def test_mix_compare_average_and_format():
+    from crypto import upbit_mix as mx
+    a, b = mx.compare(_ind_df(n=900, seed=5)), mx.compare(_ind_df(n=900, seed=7), "2023-06-01")
+    assert list(a.index) == list(mx.NAMES) and len(b) == len(a)
+    avg = mx.average([a, a])
+    assert abs(avg.loc["보유", "연환산"] - a.loc["보유", "연환산"]) < 1e-12
+    assert "섞기: 평균" in mx.fmt(avg)
