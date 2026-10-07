@@ -31,7 +31,7 @@ jobs:
           ENABLED: ${{ vars.MOMENTUM_ENABLED }}
           LOOKBACK: ${{ vars.MOMENTUM_LOOKBACK || '90' }}
           ALLOC: ${{ vars.MOMENTUM_ALLOC || '0.5' }}
-          MODE: ${{ vars.MOMENTUM_MODE || 'single' }}
+          MODE: ${{ vars.MOMENTUM_MODE || 'single' }}       # single / ensemble / mix(앙상블×일목 교집합)
           MAX_NOTIONAL: ${{ vars.MOMENTUM_MAX_NOTIONAL }}   # 선택: 포지션 금액 상한(USDT)
           MIN_EQUITY: ${{ vars.MOMENTUM_MIN_EQUITY }}       # 선택: 최소 잔고(USDT), 아래면 전량 청산·중단
         run: |
