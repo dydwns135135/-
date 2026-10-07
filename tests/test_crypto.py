@@ -495,3 +495,33 @@ def test_load_data_first_success_unchanged_for_btc(monkeypatch):
     monkeypatch.setattr(R, "fetch_history", lambda ex, sym, timeframe="4h", years=4.0, **k: (seen.append(years), synthetic_prices(1500, seed=2))[1])
     ex_id, df = R.load_data(7, "BTC/USDT:USDT", min_bars=800, timeframe="1d")
     assert seen == [7] and ex_id == "bitget"   # 기존 BTC 경로는 첫 시도에서 그대로 성공
+
+
+def _mk(base, quote="USDT", swap=True, linear=True, active=True):
+    return {"base": base, "quote": quote, "swap": swap, "linear": linear, "active": active, "symbol": f"{base}/{quote}:{quote}", "info": {}}
+
+
+def test_market_survey_filters_and_finds_noncrypto_candidates():
+    from crypto.market_survey import candidates, usdt_perps
+
+    markets = {m["symbol"]: m for m in (
+        _mk("BTC"), _mk("SP500"), _mk("XAU"), _mk("NAS100"), _mk("TSLA"), _mk("DOGE"),
+        _mk("BTC", quote="USDC"), _mk("ETH", swap=False), _mk("OLD", active=False),
+    )}
+    perps = usdt_perps(markets)
+    assert sorted(m["base"] for m in perps) == ["BTC", "DOGE", "NAS100", "SP500", "TSLA", "XAU"]
+    assert sorted(m["base"] for m in candidates(perps)) == ["NAS100", "SP500", "TSLA", "XAU"]
+
+
+def test_market_survey_probe_shortens_period_until_data(monkeypatch):
+    from crypto import market_survey as M
+
+    seen = []
+    def fake_fetch(ex, sym, timeframe="4h", years=4.0, **k):
+        seen.append(years)
+        return synthetic_prices(300, seed=3) if years <= 2 else synthetic_prices(1, seed=3).iloc[0:0]
+    monkeypatch.setattr(M, "fetch_history", fake_fetch)
+    r = M.probe(object(), "SP500/USDT:USDT")
+    assert r["bars"] == 300 and r["req_years"] == 2 and seen == [8, 5, 3, 2]
+    monkeypatch.setattr(M, "fetch_history", lambda *a, **k: synthetic_prices(1, seed=3).iloc[0:0])
+    assert M.probe(object(), "X/USDT:USDT")["bars"] == 0
