@@ -1633,3 +1633,15 @@ def test_bitget_demo_uses_public_market_data_for_signals(monkeypatch):
     assert float(demo.closed_candles("1d")["close"].iloc[-1]) == 84000.0
     live = exm.BitgetFutures.from_env("BTC/USDT:USDT", 1, demo=False)
     assert live.data_ex is live.ex and live.ex.options.get("uta") is True            # 실계좌는 같은 객체
+
+
+def test_momentum_leverage_multiplies_position_and_caps_own_money():
+    from crypto.momentum_bot import plan_rebalance, position_budget, run_once_ensemble
+    assert position_budget(70, 1.0, 70, 5) == 350 and position_budget(100, 1.0, 70, 5) == 350   # 내 돈 70 상한 × 5배
+    assert position_budget(70, 1.0, None, 1) == 70
+    act, qty = plan_rebalance(1.0, 1.0, 70, 80000, 0.0, step=0.25, max_notional=70, leverage=5)
+    assert act == "buy" and abs(qty * 80000 - 350) < 1e-6
+    up = list(np.linspace(100, 400, 320))
+    b = _EnsBroker(up, bal=70.0)
+    notes = run_once_ensemble(b, 1.0, max_notional=70, mix=True, leverage=5)
+    assert abs(b.calls[0][2] - 350 / 400) < 1e-4 and "× 5배" in notes[0]
