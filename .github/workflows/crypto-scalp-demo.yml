@@ -1,0 +1,46 @@
+name: crypto-scalp-demo (ETH 1시간봉 단타 롱·숏, 데모 전용)
+
+# 데모 계좌 전용: 실거래 옵션이 없다. 매시간 1시간봉 마감 직후 한 번 판단한다.
+# 하루(한국 시간) 최대 3번 진입, 포지션이 있으면 추가 진입하지 않는다. BTC 섞기 봇과 겹치지 않게 ETH 만 거래.
+# 스케줄은 저장소 변수 SCALP_ENABLED=true 일 때만 동작(수동 실행은 항상 가능). SCALP_BUDGET(기본 1000 USDT)의 1%가 손절 1번의 손실.
+on:
+  schedule:
+    - cron: "9 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: crypto-scalp-demo
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-trader.txt
+      - run: pip install -r requirements-trader.txt
+
+      # 진행 중 포지션·오늘 진입 횟수·결과 기록(scalp_state.json)을 실행 사이에 보존
+      - uses: actions/cache@v4
+        with:
+          path: scalp_state.json
+          key: scalp-state-${{ github.run_id }}
+          restore-keys: scalp-state-
+
+      - name: Scalp
+        env:
+          BITGET_API_KEY: ${{ secrets.BITGET_API_KEY }}
+          BITGET_API_SECRET: ${{ secrets.BITGET_API_SECRET }}
+          BITGET_API_PASSPHRASE: ${{ secrets.BITGET_API_PASSPHRASE }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ENABLED: ${{ vars.SCALP_ENABLED }}
+          BUDGET: ${{ vars.SCALP_BUDGET || '1000' }}
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$ENABLED" != "true" ]; then echo "SCALP_ENABLED!=true, 건너뜀"; exit 0; fi
+          python -m crypto.scalp_bot --budget "$BUDGET"

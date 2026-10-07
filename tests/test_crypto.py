@@ -1442,3 +1442,90 @@ def test_next_cloud_top_equals_cloud_top_of_following_bar():
     df = _ind_df(n=300)
     nxt = next_cloud_top(df.iloc[:-1])                       # 마지막 봉 하나 전까지만 보고 계산한 '다음 봉' 구름 상단
     assert abs(nxt - float(ichimoku_lines(df)["top"].iloc[-1])) < 1e-9   # 실제 다음 봉의 구름 상단과 같음(미래 정보 불필요)
+
+
+class _ScalpBroker:
+    """데모 브로커 흉내: open/close 가 포지션을 바꾼다."""
+    symbol = "ETH/USDT:USDT"
+
+    def __init__(self, px):
+        self.px, self.pos, self.calls, self.leverage = px, None, [], 1
+
+    def price(self): return self.px
+    def position(self): return self.pos
+
+    def open(self, side, amount, stop=None):
+        self.calls.append(("open", side, round(amount, 6), stop, self.leverage))
+        self.pos = {"side": "long" if side == "buy" else "short", "contracts": amount, "entry": self.px}
+
+    def close(self, side, contracts):
+        self.calls.append(("close", side, round(contracts, 6)))
+        left = self.pos["contracts"] - contracts
+        self.pos = None if left <= 1e-9 else {**self.pos, "contracts": left}
+
+
+def _scalp_bars(side=1):
+    return _fs_df(n=300, spike_at=299, side=side)          # 마지막 봉에서 돌파 + 거래량 폭증
+
+
+def test_scalp_bot_enters_long_and_short_with_stop_and_risk_sizing():
+    from crypto import scalp_bot as sb
+    for side, word in ((1, "buy"), (-1, "sell")):
+        bars = _scalp_bars(side)
+        now = bars.index[-1] + pd.Timedelta(hours=1, minutes=10)
+        b = _ScalpBroker(float(bars["close"].iloc[-1]))
+        st = {}
+        msgs = sb.run_once(b, bars, st, now, 1000.0)
+        kind, s, qty, stop, lev = b.calls[0]
+        assert kind == "open" and s == word and st["entries"] == 1 and st["open"]["side"] == side
+        loss_at_stop = qty * abs(b.px - stop)
+        assert abs(loss_at_stop - 10.0) < 0.5 or qty * b.px >= 1000 * 3 - 1e-6     # 손절 시 1%(10 USDT) 또는 3배 상한
+        assert 1 <= lev <= 3 and ("롱" if side > 0 else "숏") in msgs[0]
+
+
+def test_scalp_bot_no_pyramiding_daily_cap_and_tp_flow():
+    from crypto import scalp_bot as sb
+    bars = _scalp_bars(1)
+    now = bars.index[-1] + pd.Timedelta(hours=1, minutes=10)
+    b = _ScalpBroker(float(bars["close"].iloc[-1]))
+    st = {}
+    sb.run_once(b, bars, st, now, 1000.0)
+    n = len(b.calls)
+    sb.run_once(b, bars, st, now, 1000.0)                    # 포지션 보유 중 → 추가 진입 없음
+    assert len(b.calls) == n
+    o = st["open"]
+    idx = pd.date_range(bars.index[-1] + pd.Timedelta(hours=1), periods=2, freq="1h", tz="UTC")
+    tp1_bar = pd.DataFrame({"open": [o["entry"]], "high": [o["tp1"] + 0.01], "low": [o["entry"] - 0.1 * o["r"]],
+                            "close": [o["entry"] + 0.5 * o["r"]], "volume": [100.0]}, index=idx[:1])
+    sb.run_once(b, pd.concat([bars, tp1_bar]), st, now + pd.Timedelta(hours=1), 1000.0)
+    assert b.calls[-1][0] == "close" and st["open"]["tp1_done"] and b.pos is not None    # 절반 정리
+    tp2_bar = pd.DataFrame({"open": [o["entry"]], "high": [o["tp2"] + 0.01], "low": [o["entry"]],
+                            "close": [o["tp2"]], "volume": [100.0]}, index=idx[1:])
+    msgs = sb.run_once(b, pd.concat([bars, tp1_bar, tp2_bar]), st, now + pd.Timedelta(hours=2), 1000.0)
+    assert b.pos is None and st["open"] is None and st["done"][-1]["status"] == "목표2" and "목표2" in msgs[0]
+    # 하루 3번 다 쓰면 새 신호는 건너뜀
+    st2 = {"day": sb.kst_day(now), "entries": 3}
+    b2 = _ScalpBroker(float(bars["close"].iloc[-1]))
+    msgs2 = sb.run_once(b2, bars, st2, now, 1000.0)
+    assert b2.calls == [] and "3번" in msgs2[0]
+    # 날짜가 바뀌면 다시 0부터
+    st3 = {"day": "2000-01-01", "entries": 3}
+    sb.run_once(_ScalpBroker(float(bars["close"].iloc[-1])), bars, st3, now, 1000.0)
+    assert st3["entries"] == 1
+
+
+def test_scalp_bot_exchange_stop_and_unknown_position():
+    from crypto import scalp_bot as sb
+    bars = _scalp_bars(1)
+    now = bars.index[-1] + pd.Timedelta(hours=1, minutes=10)
+    b = _ScalpBroker(float(bars["close"].iloc[-1]))
+    st = {}
+    sb.run_once(b, bars, st, now, 1000.0)
+    b.pos = None                                             # 거래소 손절 주문으로 정리됨
+    msgs = sb.run_once(b, bars, st, now, 1000.0)
+    assert st["open"] is None and st["done"][-1]["net_r"] < -1.0 and "손절" in msgs[0]
+    assert not any(c[0] == "open" for c in b.calls[1:])      # 같은 신호 봉으로 재진입하지 않음
+    u = _ScalpBroker(100.0)
+    u.pos = {"side": "long", "contracts": 1.0, "entry": 90.0}
+    assert "모르는" in sb.run_once(u, bars, {}, now, 1000.0)[0] and u.calls == []
+    assert sb.size_for(1000, 0.001)[1] == 3 and sb.size_for(1000, 0.05) == (200.0, 1)
