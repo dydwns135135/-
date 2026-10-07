@@ -23,6 +23,13 @@ def configure_demo(ex: ccxt.Exchange) -> None:
     ex.headers = {**(ex.headers or {}), "PAPTRADING": "1"}
 
 
+def configure_live(ex: ccxt.Exchange) -> None:
+    """실계좌 설정. 실계좌도 통합 계정(UTA)이면 일반 계정 API 가 40085
+    ('You are in Unified Account mode, and the Classic Account API is not supported') 로 거부된다
+    → 기본은 UTA API. 일반(Classic) 계정이면 BITGET_UTA=0 으로 끈다."""
+    ex.options["uta"] = os.environ.get("BITGET_UTA", "1") != "0"
+
+
 class BitgetFutures:
     def __init__(self, ex: ccxt.Exchange, symbol: str, leverage: int,
                  data_symbol: str | None = None, demo: bool = False):
@@ -43,9 +50,10 @@ class BitgetFutures:
             "enableRateLimit": True,
         })
         if demo:
-            # 데모: 일반 종목(BTC/USDT:USDT) + USDT 증거금 + PAPTRADING 헤더 + 일반 선물(classic) API (UTA 자동감지 끔).
+            # 데모: 일반 종목(BTC/USDT:USDT) + USDT 증거금 + PAPTRADING 헤더 + 통합 계정(UTA) API.
             configure_demo(ex)
             return cls(ex, symbol, leverage, demo=True)
+        configure_live(ex)
         return cls(ex, symbol, leverage)
 
     def closed_candles(self, timeframe: str, limit: int = 300, deep: bool = False) -> pd.DataFrame:

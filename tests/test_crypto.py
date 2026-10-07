@@ -1544,3 +1544,51 @@ def test_scalp_bot_15x_message_and_loss_matches_risk():
     _, _, qty, stop, lev = b.calls[0]
     assert "레버리지" in msgs[0] and 1 <= lev <= 15
     assert abs(qty * abs(b.px - stop) - 10.0) < 0.5 or qty * b.px >= 15000 - 1e-6
+
+
+def test_configure_live_uses_unified_account_api_by_default(monkeypatch):
+    import ccxt
+    from crypto.exchange import configure_live
+    ex = ccxt.bitget({"options": {"defaultType": "swap"}})
+    monkeypatch.delenv("BITGET_UTA", raising=False)
+    configure_live(ex)
+    assert ex.options["uta"] is True                         # 실계좌 통합 계정: 40085 방지
+    assert "PAPTRADING" not in (ex.headers or {})            # 실계좌에는 데모 헤더 없음
+    monkeypatch.setenv("BITGET_UTA", "0")
+    configure_live(ex)
+    assert ex.options["uta"] is False                        # 일반(Classic) 계정이면 끌 수 있음
+
+
+def _daily(closes, spread=0.0):
+    idx = pd.date_range("2020-01-01", periods=len(closes), freq="1D", tz="UTC")
+    c = np.asarray(closes, float)
+    o = np.r_[c[0], c[:-1]]
+    return pd.DataFrame({"open": o, "high": np.maximum(o, c) * (1 + spread), "low": np.minimum(o, c) * (1 - spread), "close": c}, index=idx)
+
+
+def test_mix_leverage_signed_stepping_and_weights():
+    from crypto import mix_leverage as ml
+    s = ml.stepped_signed(pd.Series([0.0, 0.5, 0.6, 0.875, -0.25, -0.3, 0.0]))
+    assert list(s) == [0.0, 0.5, 0.5, 0.875, -0.25, -0.25, 0.0]
+    up = _daily(np.linspace(100, 400, 400))
+    w = ml.mix_weights(up, True)
+    assert (w.iloc[:ml.WARM] == 0).all() and w.iloc[-1] == 1.0
+    down = _daily(np.r_[np.linspace(100, 400, 300), np.linspace(400, 150, 100)])
+    assert ml.mix_weights(down, True).iloc[-1] < 0 and ml.mix_weights(down, False).iloc[-1] == 0.0
+
+
+def test_mix_leverage_simulate_costs_short_profit_and_liquidation():
+    from crypto import mix_leverage as ml
+    flat = _daily(np.full(300, 100.0))
+    r = ml.simulate(flat, pd.Series(0.0, index=flat.index), 5, start=10)
+    assert abs(r["equity"].iloc[-1] - 1.0) < 1e-12 and r["trades"] == 0
+    down = _daily(np.linspace(100, 50, 300))
+    short = ml.simulate(down, pd.Series(-1.0, index=down.index), 1, start=10)
+    assert short["equity"].iloc[-1] > 1.4 and short["ruin"] is None
+    crash = _daily(np.r_[np.full(50, 100.0), np.full(50, 75.0)])        # 하루에 -25%
+    liq = ml.simulate(crash, pd.Series(1.0, index=crash.index), 5, start=10)
+    assert liq["ruin"] is not None and liq["equity"].iloc[-1] == 0.0
+    safe = ml.simulate(crash, pd.Series(1.0, index=crash.index), 1, start=10)
+    assert safe["ruin"] is None and 0.7 < safe["equity"].iloc[-1] < 0.76
+    t = ml.compare(_daily(np.linspace(100, 400, 400)))
+    assert len(t) == 6 and set(t["방향"]) == {"롱만", "롱·숏"} and "파산" in ml.fmt(t)
