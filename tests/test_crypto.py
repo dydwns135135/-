@@ -1592,3 +1592,13 @@ def test_mix_leverage_simulate_costs_short_profit_and_liquidation():
     assert safe["ruin"] is None and 0.7 < safe["equity"].iloc[-1] < 0.76
     t = ml.compare(_daily(np.linspace(100, 400, 400)))
     assert len(t) == 6 and set(t["방향"]) == {"롱만", "롱·숏"} and "파산" in ml.fmt(t)
+
+
+def test_mix_leverage_trades_only_when_weight_changes():
+    from crypto import mix_leverage as ml
+    up = _daily(np.linspace(100, 300, 400))
+    one = ml.simulate(up, pd.Series(1.0, index=up.index), 3, start=10)
+    assert one["trades"] == 1                                   # 비중이 그대로면 처음 진입 1번만
+    w = pd.Series(1.0, index=up.index)
+    w.iloc[200:] = -0.5
+    assert ml.simulate(up, w, 1, start=10)["trades"] == 2       # 방향 전환 1번 추가

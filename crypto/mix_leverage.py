@@ -63,7 +63,7 @@ def simulate(df: pd.DataFrame, w: pd.Series, lev: float, start: int = WARM) -> d
     O, H, L, C = (df[k].to_numpy(float) for k in ("open", "high", "low", "close"))
     wt = w.to_numpy(float)
     n = len(df)
-    E, q, mark = 1.0, 0.0, O[start] if start < n else 0.0
+    E, q, mark, cur_w = 1.0, 0.0, O[start] if start < n else 0.0, 0.0
     eq = np.full(n, np.nan)
     trades, ruin = 0, None
     for i in range(start, n):
@@ -72,11 +72,10 @@ def simulate(df: pd.DataFrame, w: pd.Series, lev: float, start: int = WARM) -> d
             continue
         E += q * (O[i] - mark)
         mark = O[i]
-        if i > start:
+        if i > start and wt[i - 1] != cur_w:   # 목표 비중이 바뀐 날만 조정(그 외에는 수량 유지 = 봇과 같음)
             target = lev * E / O[i] * wt[i - 1] if E > 0 else 0.0
-            if abs(target - q) > 1e-12:
-                E -= abs(target - q) * O[i] * (FEE + SLIP)
-                q, trades = target, trades + 1
+            E -= abs(target - q) * O[i] * (FEE + SLIP)
+            q, cur_w, trades = target, wt[i - 1], trades + 1
         worst = L[i] if q > 0 else H[i]
         if q != 0 and E + q * (worst - mark) <= MMR * abs(q) * worst:
             E, q, ruin = 0.0, 0.0, df.index[i]
