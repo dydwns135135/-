@@ -1602,3 +1602,34 @@ def test_mix_leverage_trades_only_when_weight_changes():
     w = pd.Series(1.0, index=up.index)
     w.iloc[200:] = -0.5
     assert ml.simulate(up, w, 1, start=10)["trades"] == 2       # 방향 전환 1번 추가
+
+
+def test_bitget_demo_uses_public_market_data_for_signals(monkeypatch):
+    from crypto import exchange as exm
+
+    class _Ex:
+        def __init__(self, tag, px):
+            self.tag, self.px, self.options, self.headers = tag, px, {}, {}
+        def load_markets(self): return {}
+        def set_sandbox_mode(self, on): self.sandbox = on
+        def parse_timeframe(self, tf): return 86400
+        def fetch_ticker(self, s): return {"last": self.px}
+        def fetch_ohlcv(self, s, tf, since=None, limit=None):
+            return [[0, self.px, self.px, self.px, self.px, 1.0], [86400_000, self.px, self.px, self.px, self.px, 1.0]]
+
+    made = []
+
+    def fake_bitget(cfg):
+        ex = _Ex("keyed" if "apiKey" in cfg else "public", 1000.0 if "apiKey" in cfg else 84000.0)
+        made.append(ex)
+        return ex
+
+    monkeypatch.setattr(exm.ccxt, "bitget", fake_bitget)
+    for k in ("BITGET_API_KEY", "BITGET_API_SECRET", "BITGET_API_PASSPHRASE"):
+        monkeypatch.setenv(k, "x")
+    demo = exm.BitgetFutures.from_env("BTC/USDT:USDT", 1, demo=True)
+    assert demo.ex.tag == "keyed" and demo.ex.headers.get("PAPTRADING") == "1"      # 주문은 데모 계좌
+    assert demo.data_ex.tag == "public" and demo.price() == 84000.0                  # 판단은 실제 시장 시세
+    assert float(demo.closed_candles("1d")["close"].iloc[-1]) == 84000.0
+    live = exm.BitgetFutures.from_env("BTC/USDT:USDT", 1, demo=False)
+    assert live.data_ex is live.ex and live.ex.options.get("uta") is True            # 실계좌는 같은 객체
