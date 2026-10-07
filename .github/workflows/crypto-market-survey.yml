@@ -1,0 +1,24 @@
+name: crypto-market-survey (Bitget 상품 조사)
+
+# 조회 전용(API 키·주문 없음). 지수·주식·금·원유 같은 비(非)코인 선물이 있는지, 데이터 기간과 거래대금을 확인한다.
+on:
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-trader.txt
+      - run: pip install -r requirements-trader.txt
+      - name: Survey
+        run: python -m crypto.market_survey
+      - uses: actions/upload-artifact@v4
+        with:
+          name: market-survey
+          path: data/
