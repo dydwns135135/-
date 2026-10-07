@@ -1,4 +1,4 @@
-"""섞기(앙상블 × 일목) 전략을 롱만 / 롱·숏, 레버리지 1·3·5배로 BTC 일봉에서 시뮬레이션한다(청산 포함).
+"""섞기(앙상블 × 일목) 전략을 롱만 / 롱·숏, 레버리지 1·3·5·10배로 BTC 일봉에서 시뮬레이션한다(청산 포함).
 python -m crypto.mix_leverage [--years 7]   (공개 시세만 사용, API 키·주문 없음)
 
 규칙(결과를 보기 전에 정함):
@@ -22,7 +22,7 @@ from .strategies import momentum_ensemble
 FEE, SLIP, MMR = 0.0006, 0.0005, 0.005
 FUND_DAILY = per8h(6.6) * 3
 WARM, STEP = 250, 0.25
-LEVERAGES = (1, 3, 5)
+LEVERAGES = (1, 3, 5, 10)
 
 
 def cloud_bounds(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:

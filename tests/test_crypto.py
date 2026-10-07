@@ -1591,7 +1591,7 @@ def test_mix_leverage_simulate_costs_short_profit_and_liquidation():
     safe = ml.simulate(crash, pd.Series(1.0, index=crash.index), 1, start=10)
     assert safe["ruin"] is None and 0.7 < safe["equity"].iloc[-1] < 0.76
     t = ml.compare(_daily(np.linspace(100, 400, 400)))
-    assert len(t) == 6 and set(t["방향"]) == {"롱만", "롱·숏"} and "파산" in ml.fmt(t)
+    assert len(t) == 2 * len(ml.LEVERAGES) and set(t["방향"]) == {"롱만", "롱·숏"} and "파산" in ml.fmt(t)
 
 
 def test_mix_leverage_trades_only_when_weight_changes():
