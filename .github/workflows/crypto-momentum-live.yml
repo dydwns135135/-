@@ -1,6 +1,7 @@
 name: crypto-momentum-live (비트겟 실거래 - BTC 섞기)
 
-# 실제 돈으로 주문한다. 롱만·BTC 섞기(앙상블 × 일목 구름). 레버리지 LIVE_LEVERAGE(기본 1, 최대 5). 데모용 crypto-momentum 과 키가 다르다.
+# 실제 돈으로 주문한다. BTC 섞기(앙상블 × 일목 구름). 데모용 crypto-momentum 과 키가 다르다.
+# - LIVE_MODE: mix(기본, 롱만) / mix_ls(구름 위 롱·구름 아래 숏·사이 정리). LIVE_LEVERAGE: 1~5(기본 1).
 # - 수동 실행: action=check(기본)는 주문 없이 연결·잔고·계획만 확인, action=run 은 실제 주문.
 # - 실제 주문(run·스케줄)은 저장소 변수 LIVE_ENABLED=true 일 때만 동작.
 # - 사용할 내 돈(증거금) 상한 LIVE_MAX_NOTIONAL(기본 70 USDT, 150 초과는 거부) → 포지션 금액 = 이 금액 × 레버리지.
@@ -45,6 +46,7 @@ jobs:
           MAX_NOTIONAL: ${{ vars.LIVE_MAX_NOTIONAL || '70' }}
           MIN_EQUITY: ${{ vars.LIVE_MIN_EQUITY || '50' }}
           LEVERAGE: ${{ vars.LIVE_LEVERAGE || '1' }}
+          MODE: ${{ vars.LIVE_MODE || 'mix' }}
           MOMENTUM_CONFIRM_LIVE: "yes"
         run: |
           if [ -z "$BITGET_API_KEY" ] || [ -z "$BITGET_API_SECRET" ] || [ -z "$BITGET_API_PASSPHRASE" ]; then
@@ -52,6 +54,7 @@ jobs:
           if awk "BEGIN{exit !($MAX_NOTIONAL > 150)}"; then
             echo "LIVE_MAX_NOTIONAL=$MAX_NOTIONAL 은 150 USDT 상한을 넘습니다(올리려면 워크플로 수정 필요)."; exit 1; fi
           case "$LEVERAGE" in 1|2|3|4|5) ;; *) echo "LIVE_LEVERAGE=$LEVERAGE 는 1~5 정수만 가능합니다."; exit 1;; esac
+          case "$MODE" in mix|mix_ls) ;; *) echo "LIVE_MODE=$MODE 는 mix 또는 mix_ls 만 가능합니다."; exit 1;; esac
           CHECK=""
           if [ "$ACTION" = "check" ]; then
             CHECK="--check"
@@ -59,5 +62,5 @@ jobs:
             if [ "${{ github.event_name }}" = "schedule" ]; then echo "LIVE_ENABLED!=true, 건너뜀"; exit 0; fi
             echo "실제 주문은 저장소 변수 LIVE_ENABLED=true 일 때만 가능합니다."; exit 1
           fi
-          python -m crypto.momentum_bot --live --mode mix --alloc 1.0 --leverage "$LEVERAGE" \
+          python -m crypto.momentum_bot --live --mode "$MODE" --alloc 1.0 --leverage "$LEVERAGE" \
             --max-notional "$MAX_NOTIONAL" --min-equity "$MIN_EQUITY" $CHECK

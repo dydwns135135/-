@@ -1645,3 +1645,31 @@ def test_momentum_leverage_multiplies_position_and_caps_own_money():
     b = _EnsBroker(up, bal=70.0)
     notes = run_once_ensemble(b, 1.0, max_notional=70, mix=True, leverage=5)
     assert abs(b.calls[0][2] - 350 / 400) < 1e-4 and "× 5배" in notes[0]
+
+
+def test_plan_signed_flip_add_reduce_and_flat():
+    from crypto.momentum_bot import plan_signed
+    eq, px = 70.0, 80000.0
+    full = 70 * 5 / px
+    assert plan_signed(1.0, 1.0, eq, px, 0.0, max_notional=70, leverage=5) == [("open", full)]
+    acts = plan_signed(-0.5, 1.0, eq, px, full, max_notional=70, leverage=5)          # 롱 → 숏 전환
+    assert acts[0] == ("close", full) and acts[1][0] == "open" and abs(acts[1][1] + 0.5 * full) < 1e-12
+    assert plan_signed(0.0, 1.0, eq, px, -0.5 * full, max_notional=70, leverage=5) == [("close", -0.5 * full)]
+    assert plan_signed(-1.0, 1.0, eq, px, -0.5 * full, max_notional=70, leverage=5)[0][0] == "open"   # 숏 추가
+    assert plan_signed(-0.25, 1.0, eq, px, -1.0 * full, max_notional=70, leverage=5)[0][0] == "reduce"
+    assert plan_signed(1.0, 1.0, eq, px, 0.9 * full, max_notional=70, leverage=5) == []              # 25%p 미만
+
+
+def test_run_once_mix_ls_long_above_cloud_short_below_and_flip():
+    from crypto.momentum_bot import mix_ls_weight, run_once_mix_ls
+    up = list(np.linspace(100, 400, 320))
+    b = _EnsBroker(up, bal=70.0)
+    notes = run_once_mix_ls(b, 1.0, max_notional=70, leverage=5)
+    assert b.calls[0][:2] == ("open", "buy") and abs(b.calls[0][2] - 350 / 400) < 1e-4 and "5배" in notes[0]
+    down = list(np.linspace(400, 100, 320))                       # 장기 하락: 구름 아래, 앙상블 0 → 숏 100%
+    t, npos, state, nt, nb = mix_ls_weight(_EnsBroker(down).df)
+    assert state == "아래" and t == -1.0 and npos == 0 and nt >= nb
+    flip = _EnsBroker(down, pos={"side": "long", "contracts": 0.5, "entry": 300.0}, bal=70.0)
+    notes = run_once_mix_ls(flip, 1.0, max_notional=70, leverage=5)
+    assert flip.calls[0] == ("close", "long", 0.5) and flip.calls[1][:2] == ("open", "sell")
+    assert any("숏" in n for n in notes[1:])
