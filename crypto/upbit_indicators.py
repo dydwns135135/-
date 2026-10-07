@@ -29,6 +29,16 @@ def ichimoku_lines(df: pd.DataFrame) -> dict[str, pd.Series]:
     return {"tenkan": tenkan, "kijun": kijun, "top": pd.concat([span_a, span_b], axis=1).max(axis=1, skipna=False)}
 
 
+def next_cloud_top(df: pd.DataFrame) -> float:
+    """다음 봉(지금 진행 중인 봉)의 구름 상단. 선행스팬은 26봉 앞에 그리므로 다음 봉 값은 이미 정해져 있다."""
+    h, l = df["high"], df["low"]
+    tenkan = (h.rolling(9).max() + l.rolling(9).min()) / 2
+    kijun = (h.rolling(26).max() + l.rolling(26).min()) / 2
+    raw_a = (tenkan + kijun) / 2
+    raw_b = (h.rolling(52).max() + l.rolling(52).min()) / 2
+    return float(max(raw_a.shift(25).iloc[-1], raw_b.shift(25).iloc[-1]))
+
+
 def ichimoku_cloud(df: pd.DataFrame, confirm: bool = False) -> pd.Series:
     ln = ichimoku_lines(df)
     on = df["close"] > ln["top"]
