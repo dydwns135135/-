@@ -696,3 +696,80 @@ def test_single_mode_entry_respects_max_notional():
     b = _MomBroker(up, bal=10_000.0)
     run_once(b, 90, 0.5, max_notional=400.0)
     assert b.calls == [("open", "buy", round(400.0 / 400, 5), None)]            # 잔고 50%(5000)가 아니라 상한 400 → 1개
+
+
+def _bars(opens, highs, lows, closes):
+    idx = pd.date_range("2024-01-01", periods=len(opens), freq="D", tz="UTC")
+    return pd.DataFrame({"open": opens, "high": highs, "low": lows, "close": closes}, index=idx)
+
+
+def _flat_w(n, v=1.0):
+    return pd.Series([v] * n, index=pd.date_range("2024-01-01", periods=n, freq="D", tz="UTC"))
+
+
+def test_stress_1x_no_stop_tracks_price_and_never_liquidates():
+    from crypto.leverage_stress import simulate_leveraged
+
+    p = [100, 100, 90, 60, 80, 120]                                        # -40% 까지 내렸다 반등
+    df = _bars(p, [x * 1.01 for x in p], [x * 0.99 for x in p], p)
+    r = simulate_leveraged(df, _flat_w(6), 1, None, fee=0, slip=0, fund_daily=0, start=0)
+    assert r["liqs"] == 0 and r["stops"] == 0 and r["ruin"] is None
+    assert abs(r["equity"].iloc[-1] - 120 / 100) < 1e-9                    # 첫날 시가 매수(100) → 마지막 종가 120
+
+
+def test_stress_10x_is_liquidated_by_ordinary_drawdown_and_stays_ruined():
+    from crypto.leverage_stress import simulate_leveraged
+
+    o = [100, 100, 100, 100, 100, 100]
+    lo = [100, 100, 88, 100, 100, 100]                                     # 3일째 장중 -12%
+    df = _bars(o, [101] * 6, lo, [100, 100, 95, 100, 100, 100])
+    r = simulate_leveraged(df, _flat_w(6), 10, None, fee=0, slip=0, fund_daily=0, start=0)
+    assert r["liqs"] == 1 and r["ruin"] == df.index[2]
+    assert (r["equity"].iloc[2:] == 0).all()                               # 파산 뒤 회복해도 0
+    r2 = simulate_leveraged(df, _flat_w(6), 1, None, fee=0, slip=0, fund_daily=0, start=0)
+    assert r2["liqs"] == 0 and r2["equity"].iloc[-1] > 0.9                 # 같은 가격 경로가 1배에서는 문제없음
+
+
+def test_stress_stop_precedes_liquidation_and_costs_leverage_times_stop():
+    from crypto.leverage_stress import simulate_leveraged
+
+    lo = [100, 100, 96, 100, 100]                                          # 장중 -4%
+    df = _bars([100] * 5, [101] * 5, lo, [100, 100, 99, 100, 100])
+    r = simulate_leveraged(df, _flat_w(5), 10, 0.03, fee=0, slip=0, fund_daily=0, start=0)
+    assert r["stops"] == 1 and r["liqs"] == 0 and r["ruin"] is None        # 손절(3%)이 청산(~9.5%)보다 먼저
+    assert abs(r["equity"].iloc[2] - 0.70) < 1e-9                          # 10배 × 3% = 잔고의 30% 손실
+    assert r["trades"] >= 1 and r["equity"].iloc[-1] <= 0.71               # 다음 날 재진입하지만 횡보라 회복 없음
+
+
+def test_stress_wide_stop_loses_to_liquidation_and_gap_fills_at_open():
+    from crypto.leverage_stress import simulate_leveraged
+
+    df = _bars([100, 100, 100, 100], [101] * 4, [100, 100, 80, 100], [100, 100, 85, 100])
+    r = simulate_leveraged(df, _flat_w(4), 10, 0.30, fee=0, slip=0, fund_daily=0, start=0)
+    assert r["liqs"] == 1 and r["stops"] == 0                              # 손절 30% > 청산 거리 ~9.5% → 청산이 먼저
+    gap = _bars([100, 100, 90, 100], [101, 101, 91, 101], [100, 100, 89, 100], [100, 100, 90, 100])  # 시가부터 -10% 갭
+    g = simulate_leveraged(gap, _flat_w(4), 2, 0.05, fee=0, slip=0, fund_daily=0, start=0)
+    assert g["stops"] == 1 and abs(g["equity"].iloc[2] - (1 + 2 * (90 / 100 - 1))) < 1e-9   # 손절가 95 가 아니라 시가 90 에 체결
+
+
+def test_stress_funding_and_fees_reduce_equity_and_warmup_is_flat():
+    from crypto.leverage_stress import simulate_leveraged
+
+    df = _bars([100] * 10, [100] * 10, [100] * 10, [100] * 10)
+    free = simulate_leveraged(df, _flat_w(10), 1, None, fee=0, slip=0, fund_daily=0, start=0)["equity"].iloc[-1]
+    paid = simulate_leveraged(df, _flat_w(10), 1, None, fee=0.001, slip=0, fund_daily=0.0005, start=0)["equity"].iloc[-1]
+    assert abs(free - 1.0) < 1e-12 and paid < 1.0
+    late = simulate_leveraged(df, _flat_w(10), 1, None, fee=0, slip=0, fund_daily=0, start=5)
+    assert len(late["equity"]) == 5 and (late["equity"] == 1.0).all() and late["trades"] == 1   # start 이전은 거래하지 않고, 첫 진입은 start+1 시가
+
+
+def test_stress_grid_shape_and_stats_on_synthetic_data():
+    from crypto.leverage_stress import fmt, grid, stats, simulate_leveraged
+
+    df = synthetic_prices(1200, seed=51, vol=0.03)
+    t = grid(df, start=250)
+    assert len(t) == 25 and set(t["레버리지"]) == {"1배", "2배", "3배", "5배", "10배"} and "없음" in set(t["손절폭"])
+    assert set(t["손절폭"]) == {"없음", "3%", "10%", "20%", "30%"} and "손절횟수" in t and "청산횟수" in t   # 설정과 횟수 칸이 겹치지 않는다
+    assert (t["최종잔고(배)"] >= 0).all() and "파산" in fmt(t)
+    one = t[(t["레버리지"] == "1배") & (t["손절폭"] == "없음")].iloc[0]
+    assert one["청산횟수"] == 0 and one["손절횟수"] == 0                          # 1배·손절 없음·롱만은 청산·손절이 없다
