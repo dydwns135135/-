@@ -426,3 +426,43 @@ def test_sensitivity_includes_ensemble_and_summary():
     assert (rep["전략"] == ENSEMBLE).sum() == 3 and ENSEMBLE in fmt(rep)
     txt = "\n".join(summarize(rep))
     assert "[앙상블] 샤프" in txt and "[앙상블] 최대낙폭" in txt and "8개 중" in txt
+
+
+def _multi(n=900, seeds=(1, 2, 3, 4)):
+    names = ("BTC", "ETH", "SOL", "XRP")
+    return {nm: synthetic_prices(n, seed=s, vol=0.02) for nm, s in zip(names, seeds)}
+
+
+def test_portfolio_align_uses_common_dates():
+    from crypto.portfolio_compare import align
+
+    d = _multi()
+    d["SOL"] = d["SOL"].iloc[200:]  # SOL 은 늦게 상장
+    out = align(d)
+    assert all(len(v) == 700 for v in out.values())
+    assert all(v.index.equals(out["BTC"].index) for v in out.values())
+
+
+def test_portfolio_equal_weight_pnl_is_mean_of_coin_pnls_and_same_window():
+    from crypto import portfolio_compare as P
+    from crypto import strategies as S
+
+    d = _multi()
+    pnls = P.build(d)
+    n = len(d["BTC"]) - 1 - P.WARM  # simulate 가 마지막 봉을 제외, 앞 WARM 제외
+    assert all(len(v) == n for v in pnls.values())
+    ens = pd.concat([S.simulate(x, S.momentum_ensemble(x)) for x in d.values()], axis=1).mean(axis=1).iloc[P.WARM:]
+    pd.testing.assert_series_equal(pnls["4코인 앙상블(등분)"], ens, check_names=False)
+    # 등분 포트폴리오의 총 비중은 1배를 넘지 않는다 → 코인별 손익의 평균이므로 단일 코인 손익 범위 안
+    singles = pd.concat([pnls["BTC 앙상블"], pnls["ETH 앙상블"], pnls["SOL 앙상블"], pnls["XRP 앙상블"]], axis=1)
+    assert (pnls["4코인 앙상블(등분)"] <= singles.max(axis=1) + 1e-12).all()
+
+
+def test_portfolio_compare_shape_and_summary():
+    from crypto import portfolio_compare as P
+
+    d = _multi()
+    rep, corr = P.compare(d), P.correlations(d)
+    assert len(rep) == 7 * 3 and corr.shape == (4, 4)
+    txt = "\n".join(P.summary(rep, corr, P.COINS))
+    assert "평균 상관" in txt and "세 구간 모두 낙폭 감소" in txt
