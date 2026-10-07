@@ -568,5 +568,49 @@ def test_asset_mix_load_asset_reports_all_failures(monkeypatch):
     with pytest.raises(SystemExit) as e:
         A.load_asset("QQQ")
     assert "yahoo" in str(e.value) and "stooq" in str(e.value) and "429" in str(e.value)
-    monkeypatch.setattr(A, "fetch_stooq", lambda c: synthetic_prices(10, seed=1)[["open", "close"]])
-    assert A.load_asset("GLD")[0] == "stooq"                                  # 야후 실패 → 스투크 폴백
+    daily = pd.DataFrame({"open": 1.0, "close": 1.0}, index=pd.date_range("2005-01-03", periods=1500, freq="D", tz="UTC"))
+    monkeypatch.setattr(A, "fetch_stooq", lambda c: daily)
+    assert A.load_asset("GLD")[0] == "stooq"                                  # 야후 실패 → 스투크 폴백(일봉 검사 통과)
+
+
+def test_asset_mix_check_daily_rejects_monthly_and_short_data():
+    import pytest
+    from crypto.asset_mix import check_daily
+
+    daily = pd.DataFrame({"open": 1.0, "close": 1.0}, index=pd.date_range("2015-01-01", periods=1500, freq="D", tz="UTC"))
+    assert len(check_daily(daily)) == 1500
+    weekdays = daily[daily.index.dayofweek < 5]                       # 평일만 있는 일봉(주식)도 통과
+    assert len(check_daily(weekdays)) == len(weekdays)
+    monthly = pd.DataFrame({"open": 1.0, "close": 1.0}, index=pd.date_range("2000-01-01", periods=400, freq="MS", tz="UTC"))
+    with pytest.raises(ValueError, match="일봉이 아님"):                # run #1: 월봉이 조용히 통과했던 문제
+        check_daily(monthly)
+    with pytest.raises(ValueError, match="너무 적음"):
+        check_daily(daily.iloc[:100])
+
+
+def test_asset_mix_load_asset_skips_monthly_yahoo_and_falls_back(monkeypatch):
+    from crypto import asset_mix as A
+
+    monthly = pd.DataFrame({"open": 1.0, "close": 1.0}, index=pd.date_range("2000-01-01", periods=400, freq="MS", tz="UTC"))
+    daily = pd.DataFrame({"open": 1.0, "close": 1.0}, index=pd.date_range("2005-01-03", periods=1500, freq="D", tz="UTC"))
+    monkeypatch.setattr(A, "fetch_yahoo", lambda t: monthly)
+    monkeypatch.setattr(A, "fetch_stooq", lambda c: daily)
+    src, df = A.load_asset("QQQ")
+    assert src == "stooq" and len(df) == 1500                          # 야후가 월봉이면 거부하고 스투크로
+
+
+def test_asset_mix_yahoo_request_pins_period_for_daily_data(monkeypatch):
+    from crypto import asset_mix as A
+
+    seen = {}
+    class R:
+        status_code = 200
+        text = ""
+        def json(self):
+            ts = [1_600_000_000 + i * 86400 for i in range(3)]
+            return {"chart": {"result": [{"timestamp": ts, "indicators": {"quote": [{"open": [1, 2, 3], "close": [1, 2, 3]}], "adjclose": [{"adjclose": [1, 2, 3]}]}}]}}
+    def fake_get(url, params=None, headers=None, timeout=0):
+        seen.update(params); return R()
+    monkeypatch.setattr(A.requests, "get", fake_get)
+    A.fetch_yahoo("QQQ")
+    assert "range" not in seen and seen["interval"] == "1d" and seen["period1"] == 0 and seen["period2"] > 1_700_000_000
