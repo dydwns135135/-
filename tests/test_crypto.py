@@ -853,3 +853,76 @@ def test_signal_alert_decisions_state_and_message(tmp_path):
     assert "전량 매도" in m0 and "비중 25%p" in m0
     mh = build_message(0.75, 6, 0.75, "hold", 100_000_000, closes, 2_000_000, 0.5)
     assert mh.startswith("조정 없음") and "750,000원" in mh                                  # 2,000,000 × 50% × 75%
+
+
+def _scalp_df(n=600, drift=0.0005, seed=3):
+    import numpy as np
+    import pandas as pd
+    rng = np.random.default_rng(seed)
+    c = 100 * np.exp(np.cumsum(rng.normal(drift, 0.004, n)))
+    o = np.r_[c[0], c[:-1]]
+    idx = pd.date_range("2024-01-01", periods=n, freq="1h", tz="UTC")
+    return pd.DataFrame({"open": o, "high": np.maximum(o, c) * 1.001, "low": np.minimum(o, c) * 0.999, "close": c}, index=idx)
+
+
+def test_scalp_simulate_cost_and_timing():
+    import pandas as pd
+    from crypto import upbit_scalp as sc
+    df = _scalp_df()
+    always = pd.Series(1.0, index=df.index)
+    # 항상 보유: 첫 진입 비용 1번만, 비용 0이면 시가→시가 누적수익과 같다
+    free = sc.simulate(df, always, 0.0)
+    paid = sc.simulate(df, always, 0.001)
+    assert paid.iloc[-1] < free.iloc[-1]
+    assert abs(paid.iloc[-1] / free.iloc[-1] - (1 - 0.001)) < 1e-4
+    # 신호가 마감 봉에서 나와도 같은 봉 수익은 먹지 못한다(다음 봉부터)
+    sig = pd.Series(0.0, index=df.index)
+    sig.iloc[10] = 1.0
+    eq = sc.simulate(df, sig, 0.0)
+    assert eq.iloc[10] == 1.0 and eq.iloc[11] != 1.0
+
+
+def test_scalp_strategies_signals_binary_and_trade_costs_hurt():
+    from crypto import upbit_scalp as sc
+    df = _scalp_df(n=800, drift=0.0)
+    tbl = sc.evaluate(df)
+    assert len(tbl) == len(sc.STRATEGIES) + 1
+    for name, fn in sc.STRATEGIES.items():
+        s = fn(df)
+        assert set(s.unique()) <= {0.0, 1.0}
+    rows = tbl[tbl["전략"] != "BTC 보유"]
+    assert (rows["비용0 연환산"] >= rows["연환산"] - 1e-9).all()
+    assert "하루평균" in sc.fmt(tbl)
+
+
+def test_scalp_breakout_enters_after_high_and_exits_after_low():
+    import pandas as pd
+    from crypto import upbit_scalp as sc
+    idx = pd.date_range("2024-01-01", periods=12, freq="1h", tz="UTC")
+    close = [10, 10, 10, 10, 12, 13, 13, 9, 9, 9, 9, 9]
+    df = pd.DataFrame({"open": close, "high": close, "low": close, "close": close}, index=idx)
+    s = sc.breakout(df, 3, 2)
+    assert s.iloc[3] == 0.0 and s.iloc[4] == 1.0 and s.iloc[6] == 1.0 and s.iloc[7] == 0.0
+
+
+def test_upbit_minutes_fetch_uses_minutes_url():
+    from crypto.upbit_data import fetch_upbit_minutes
+    seen = []
+
+    class R:
+        status_code = 200
+
+        def __init__(self, rows):
+            self.rows = rows
+
+        def json(self):
+            return self.rows
+
+    def fake(url, params=None, headers=None, timeout=None):
+        seen.append(url)
+        rows = [{"opening_price": 1, "high_price": 1, "low_price": 1, "trade_price": 1,
+                 "candle_date_time_utc": f"2024-01-01T{23 - i // 60:02d}:{59 - i % 60:02d}:00"} for i in range(5)]
+        return R(rows)
+
+    df = fetch_upbit_minutes(60, total=5, get=fake, sleep=lambda s: None)
+    assert seen and seen[0].endswith("/candles/minutes/60") and len(df) == 5
