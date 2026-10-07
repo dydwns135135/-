@@ -17,6 +17,8 @@ def parse_upbit(rows: list[dict]) -> pd.DataFrame:
         "open": df["opening_price"].astype(float), "high": df["high_price"].astype(float),
         "low": df["low_price"].astype(float), "close": df["trade_price"].astype(float),
     })
+    if "candle_acc_trade_price" in df:
+        out["value"] = df["candle_acc_trade_price"].astype(float)   # 봉 거래대금(원)
     out.index = pd.to_datetime(df["candle_date_time_utc"], utc=True)
     return out[~out.index.duplicated()].sort_index()
 

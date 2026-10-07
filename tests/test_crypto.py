@@ -926,3 +926,64 @@ def test_upbit_minutes_fetch_uses_minutes_url():
 
     df = fetch_upbit_minutes(60, total=5, get=fake, sleep=lambda s: None)
     assert seen and seen[0].endswith("/candles/minutes/60") and len(df) == 5
+
+
+def _rot_panel(n=420):
+    import numpy as np
+    import pandas as pd
+    idx = pd.date_range("2022-01-01", periods=n, freq="1D", tz="UTC")
+    t = np.arange(n)
+    c = pd.DataFrame({
+        "KRW-BTC": 100 * np.exp(0.002 * t), "KRW-UP": 50 * np.exp(0.004 * t),
+        "KRW-DOWN": 80 * np.exp(-0.003 * t), "KRW-FLAT": 70 + np.sin(t / 7), "KRW-NEW": 30 * np.exp(0.003 * t),
+        "KRW-UP2": 40 * np.exp(0.0035 * t)}, index=idx)
+    c.loc[idx[:300], "KRW-NEW"] = np.nan   # 늦게 상장
+    o = c.shift(1).fillna(c)
+    v = pd.DataFrame({"KRW-BTC": 1000.0, "KRW-UP": 800.0, "KRW-DOWN": 600.0, "KRW-FLAT": 500.0, "KRW-NEW": 900.0, "KRW-UP2": 700.0}, index=idx)
+    return o, c, v
+
+
+def test_rotation_scores_nan_until_history_and_flag_trend():
+    from crypto import upbit_rotation as ro
+    o, c, v = _rot_panel()
+    sc = ro.scores(c)
+    assert sc["KRW-BTC"].iloc[:250].isna().all() and sc["KRW-BTC"].iloc[-1] == 1.0
+    assert sc["KRW-DOWN"].iloc[-1] == 0.0
+    assert sc["KRW-NEW"].iloc[-1] != sc["KRW-NEW"].iloc[-1]   # 상장 250일 안 됨 → 후보 제외(NaN)
+
+
+def test_rotation_picks_strongest_trending_and_goes_cash_when_all_down():
+    import pandas as pd
+    from crypto import upbit_rotation as ro
+    o, c, v = _rot_panel()
+    w = ro.target_weights(c, v, "rotation", n_univ=5, k=2, rebal=1)
+    last = w.iloc[-1]
+    assert last["KRW-UP"] > 0 and last["KRW-UP2"] > 0 and last["KRW-DOWN"] == 0 and last["KRW-NEW"] == 0
+    assert abs(last.sum() - 1.0) < 1e-9
+    down = c.copy()
+    for col in down.columns:
+        down[col] = 100 * (0.998 ** pd.Series(range(len(down)), index=down.index).values)
+    wd = ro.target_weights(down, v, "rotation", n_univ=5, k=2, rebal=1)
+    assert wd.iloc[-1].sum() == 0.0
+
+
+def test_rotation_rebalance_holds_weights_and_costs_reduce_equity():
+    from crypto import upbit_rotation as ro
+    o, c, v = _rot_panel()
+    w7 = ro.target_weights(c, v, "equal", n_univ=3, rebal=7)
+    assert (w7.diff().abs().sum(axis=1) > 0).sum() <= len(w7) // 7 + 2
+    free = ro.simulate(o, w7, 0.0)
+    paid = ro.simulate(o, w7, 0.003)
+    assert ((1 + paid["ret"]).prod()) < ((1 + free["ret"]).prod())
+    assert paid["turn"].sum() > 0
+
+
+def test_rotation_compare_and_today_table_shapes():
+    from crypto import upbit_rotation as ro
+    panel = _rot_panel(n=700)
+    res = ro.compare(panel)
+    assert set(res) == {"전체", "뒤쪽 절반", "최근 2년"}
+    assert len(res["전체"]) == 4 and "연환산" in res["전체"].columns
+    t = ro.today_table(panel[1], panel[2])
+    assert "KRW-BTC".replace("KRW-", "") in set(t["종목"]) and "오늘 목표비중" in t.columns
+    assert "연환산" in ro.fmt_compare(res["전체"]) and "종목" in ro.fmt_today(t)
