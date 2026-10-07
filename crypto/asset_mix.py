@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import io
 import os
+import time
 
 import numpy as np
 import pandas as pd
@@ -28,8 +29,10 @@ STOOQ = {"QQQ": "qqq.us", "GLD": "gld.us"}
 
 def fetch_yahoo(ticker: str, timeout: int = 30) -> pd.DataFrame:
     """Yahoo 차트 API(일봉, 가능한 전 기간). 시가는 배당·분할 조정비율을 곱해 조정가로 맞춘다."""
+    # range=max 는 일봉 대신 월봉을 돌려줄 수 있어(run #1: 12년에 146봉) period1/period2 로 기간을 직접 지정한다.
     r = requests.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}",
-                     params={"range": "max", "interval": "1d", "events": "div,splits"}, headers=UA, timeout=timeout)
+                     params={"period1": 0, "period2": int(time.time()) + 86400, "interval": "1d", "events": "div,splits"},
+                     headers=UA, timeout=timeout)
     if r.status_code != 200:
         raise RuntimeError(f"Yahoo HTTP {r.status_code}: {r.text[:80]!r}")
     res = r.json()["chart"]["result"][0]
@@ -57,22 +60,32 @@ def fetch_stooq(code: str, timeout: int = 30) -> pd.DataFrame:
     return d.rename(columns={"Open": "open", "Close": "close"})[["open", "close"]].dropna()
 
 
+def check_daily(df: pd.DataFrame, min_bars: int = 300, max_gap_days: float = 4.0) -> pd.DataFrame:
+    """일봉인지 검사한다(월·주봉이 섞여 오면 결과가 전부 무의미해진다). 봉 간격의 중앙값이 짧고 봉 수가 충분해야 한다."""
+    if len(df) < min_bars:
+        raise ValueError(f"봉이 너무 적음({len(df)}개)")
+    gap = float(df.index.to_series().diff().dt.total_seconds().median() / 86400)
+    if gap > max_gap_days:
+        raise ValueError(f"일봉이 아님(봉 간격 중앙값 {gap:.1f}일, {len(df)}봉) — 월·주봉으로 보임")
+    return df
+
+
 def load_asset(name: str) -> tuple[str, pd.DataFrame]:
     errors = []
     try:
-        return "yahoo", fetch_yahoo(ASSETS[name])
+        return "yahoo", check_daily(fetch_yahoo(ASSETS[name]))
     except Exception as e:
         errors.append(f"yahoo: {type(e).__name__}: {str(e)[:100]}")
     if name in STOOQ:
         try:
-            return "stooq", fetch_stooq(STOOQ[name])
+            return "stooq", check_daily(fetch_stooq(STOOQ[name]))
         except Exception as e:
             errors.append(f"stooq: {type(e).__name__}: {str(e)[:100]}")
     if name == "BTC":
         try:
             ex_id, d = load_data(8, "BTC/USDT:USDT", min_bars=800, timeframe="1d")
-            return ex_id, d[["open", "close"]]
-        except SystemExit as e:
+            return ex_id, check_daily(d[["open", "close"]])
+        except (SystemExit, ValueError) as e:
             errors.append(f"거래소: {str(e)[:150]}")
     raise SystemExit(f"{name} 시세를 받지 못함 → " + " | ".join(errors))
 
@@ -162,7 +175,8 @@ def main() -> None:
     raw, src = {}, {}
     for k in ASSETS:
         src[k], raw[k] = load_asset(k)
-        print(f"  {k}: {src[k]} {len(raw[k])}봉 {raw[k].index[0]:%Y-%m-%d}~{raw[k].index[-1]:%Y-%m-%d}")
+        gap = raw[k].index.to_series().diff().dt.total_seconds().median() / 86400
+        print(f"  {k}: {src[k]} {len(raw[k])}봉 {raw[k].index[0]:%Y-%m-%d}~{raw[k].index[-1]:%Y-%m-%d} (봉 간격 중앙값 {gap:.1f}일)")
     texts = [section("A. BTC+나스닥100+금", common(raw, ["BTC", "QQQ", "GLD"]), ["BTC", "QQQ", "GLD"]),
              section("B. 전통자산만(장기)", common(raw, ["QQQ", "GLD"]), ["QQQ", "GLD"])]
     text = "\n\n".join(texts)
