@@ -130,6 +130,34 @@ def run_once(broker, lookback: int = 90, alloc: float = 0.5, stop_loss: float | 
     return [head, "보유 유지" if pos else "현금 유지(신호 없음)"]
 
 
+class CheckBroker:
+    """점검 모드: 실제 브로커의 조회 기능은 그대로 쓰고 주문(open/close)만 가로채 기록한다."""
+    def __init__(self, broker):
+        self._b, self.blocked = broker, []
+
+    def __getattr__(self, name):
+        return getattr(self._b, name)
+
+    def open(self, side, amount, stop=None):
+        self.blocked.append(f"(주문 안 함) 진입 {side} {amount:.5f}")
+
+    def close(self, side, contracts):
+        self.blocked.append(f"(주문 안 함) 청산 {side} {contracts}")
+
+
+def check_notes(broker, notes: list[str]) -> list[str]:
+    """점검 결과 문구: 잔고·포지션·계획된 주문(실행 안 함)·진단."""
+    out = ["🔎 점검 모드: 주문하지 않고 연결·잔고·계획만 확인"] + notes
+    out += broker.blocked or ["(계획된 주문 없음)"]
+    try:
+        out.append(f"잔고 {broker.balance():,.2f} USDT · 포지션 {broker.position() or '없음'}")
+    except Exception as e:  # 조회 실패도 그대로 보여 준다
+        out.append(f"잔고/포지션 조회 실패: {type(e).__name__}: {str(e)[:150]}")
+    if hasattr(broker, "diagnose"):
+        out.append(f"진단: {str(broker.diagnose())[:300]}")
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--symbol", default="BTC/USDT:USDT")
@@ -141,6 +169,7 @@ def main() -> None:
     ap.add_argument("--max-notional", type=float, default=None, help="포지션 금액 상한(USDT). 잔고가 커도 이 금액을 넘기지 않음")
     ap.add_argument("--min-equity", type=float, default=None, help="최소 잔고(USDT). 이 아래면 전량 청산하고 신규 진입 중단")
     ap.add_argument("--live", action="store_true")
+    ap.add_argument("--check", action="store_true", help="주문하지 않고 연결·잔고·계획만 확인")
     a = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     if a.live and os.environ.get("MOMENTUM_CONFIRM_LIVE") != "yes":
@@ -149,11 +178,15 @@ def main() -> None:
     from .exchange import BitgetFutures
     try:
         broker = BitgetFutures.from_env(a.symbol, 1, demo=not a.live)  # 레버리지 1배 고정
+        if a.check:
+            broker = CheckBroker(broker)
         notes = (run_once_ensemble(broker, a.alloc, a.stop_loss, a.max_notional, a.min_equity) if a.mode == "ensemble"
                  else run_once(broker, a.lookback, a.alloc, a.stop_loss, a.max_notional, a.min_equity))
     except Exception as e:
         notify.send(f"❌ 모멘텀봇 오류 [{mode}]: {type(e).__name__}: {str(e)[:300]}")
         raise
+    if a.check:
+        notes = check_notes(broker, notes)
     text = "\n".join(notes)
     log.info(text)
     notify.send(f"🪙 모멘텀봇 [{mode}/{a.mode}] {a.symbol}\n{text}")

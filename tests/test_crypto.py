@@ -1397,3 +1397,19 @@ def test_spotbot_bbrsi_stateful_entry_and_exit_and_other_strategies(tmp_path):
     ev_args = _spot_args(strategy="ema_volume")
     st2 = spot_bot.run_once(_FakeEx(_chan_df(n=400)), ev_args, [].append, str(tmp_path / "e.json"))
     assert st2.get("paper_long") in (None, False)
+
+
+def test_momentum_check_mode_blocks_orders_and_reports():
+    from crypto.momentum_bot import CheckBroker, check_notes, run_once_ensemble
+    up = list(np.linspace(100, 400, 320))
+    real = _EnsBroker(up)
+    cb = CheckBroker(real)
+    notes = run_once_ensemble(cb, 1.0, max_notional=150)
+    assert real.calls == [] and cb.blocked and "주문 안 함" in cb.blocked[0]
+    out = check_notes(cb, notes)
+    assert out[0].startswith("🔎 점검 모드") and any("잔고" in x for x in out)
+    down = list(np.linspace(400, 100, 320))
+    real2 = _EnsBroker(down, pos={"side": "long", "contracts": 1.0, "entry": 300.0})
+    cb2 = CheckBroker(real2)
+    run_once_ensemble(cb2, 1.0)
+    assert real2.calls == [] and "청산" in cb2.blocked[0]
