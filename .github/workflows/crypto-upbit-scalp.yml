@@ -1,0 +1,24 @@
+name: crypto-upbit-scalp (업비트 BTC/원화 단타 백테스트)
+
+# 공개 시세만 사용(API 키·주문 없음).
+on:
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-trader.txt
+      - run: pip install -r requirements-trader.txt
+      - name: Backtest
+        run: python -m crypto.upbit_scalp
+      - uses: actions/upload-artifact@v4
+        with:
+          name: upbit-scalp
+          path: data/
