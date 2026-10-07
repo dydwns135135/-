@@ -76,15 +76,16 @@ def kill_switch(broker, equity: float, min_equity: float | None) -> list[str] | 
     return msg
 
 
-def mix_weight(candles: pd.DataFrame) -> tuple[float, int, bool] | None:
-    """섞기(교집합): 종가가 일목 구름 위일 때만 앙상블 비중, 아래면 0. (목표 비중, 양(+) 기간 수, 구름 위 여부)"""
-    from .upbit_indicators import ichimoku_cloud
+def mix_weight(candles: pd.DataFrame) -> tuple[float, int, bool, float] | None:
+    """섞기(교집합): 종가가 일목 구름 위일 때만 앙상블 비중, 아래면 0.
+    (목표 비중, 양(+) 기간 수, 구름 위 여부, 다음 일봉의 구름 상단 = 다음 판단의 기준 가격)"""
+    from .upbit_indicators import ichimoku_cloud, next_cloud_top
     res = ensemble_weight(candles["close"])
     if res is None:
         return None
     w, npos = res
     above = bool(ichimoku_cloud(candles).iloc[-1] > 0)
-    return (w if above else 0.0), npos, above
+    return (w if above else 0.0), npos, above, next_cloud_top(candles)
 
 
 def run_once_ensemble(broker, alloc: float = 0.5, stop_loss: float | None = None,
@@ -96,7 +97,7 @@ def run_once_ensemble(broker, alloc: float = 0.5, stop_loss: float | None = None
         res = mix_weight(candles)
         if res is None:
             return [f"일봉이 부족해 판단 보류 ({len(candles)}개, 필요 {max(ENSEMBLE_LOOKBACKS) + 1}개 이상)"]
-        w, npos, above = res
+        w, npos, above, next_top = res
     else:
         res = ensemble_weight(candles["close"])
         if res is None:
@@ -112,7 +113,10 @@ def run_once_ensemble(broker, alloc: float = 0.5, stop_loss: float | None = None
     head = (f"앙상블 모멘텀: {len(ENSEMBLE_LOOKBACKS)}개 기간 중 {npos}개 양(+) → 목표 비중 {w:.0%} "
             f"(잔고의 {w * alloc:.0%}), 현재 {current:.5f} BTC")
     if mix:
-        head = ("섞기(앙상블×일목): " + head + f" · 일목 구름 {'위 → 앙상블 비중 사용' if above else '아래 → 목표 0%'}")
+        head = ("섞기(앙상블×일목): " + head + f" · 일목 구름 {'위 → 앙상블 비중 사용' if above else '아래 → 목표 0%'}\n"
+                + (f"📍 기준 가격: 다음 일봉(한국 09시 마감) 종가가 구름 상단 {next_top:,.0f} 아래로 마감하면 정리"
+                   if above else
+                   f"📍 재진입 기준: 다음 일봉(한국 09시 마감) 종가가 구름 상단 {next_top:,.0f} 위로 마감하면 매수"))
     if act == "buy":
         stop = px * (1 - stop_loss) if stop_loss else None
         broker.open("buy", qty, stop)

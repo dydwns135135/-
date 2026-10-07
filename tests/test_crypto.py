@@ -1419,7 +1419,7 @@ def test_momentum_mix_mode_follows_ensemble_above_cloud_and_exits_below():
     from crypto.momentum_bot import mix_weight, run_once_ensemble
     up = list(np.linspace(100, 400, 320))
     b = _EnsBroker(up)
-    w, npos, above = mix_weight(b.df)
+    w, npos, above, top = mix_weight(b.df)
     assert above and w == 1.0 and npos == 8
     run_once_ensemble(b, 0.5, mix=True)
     assert b.calls[0][:2] == ("open", "buy") and abs(b.calls[0][2] - 10000 * 0.5 / 400) < 1e-4
@@ -1430,7 +1430,15 @@ def test_momentum_mix_mode_follows_ensemble_above_cloud_and_exits_below():
     run_once_ensemble(ens, 0.5)
     assert not any(c[0] == "close" and c[2] == 12.5 for c in ens.calls)      # 앙상블은 전량 청산 아님
     mixb = _EnsBroker(path, pos=dict(pos))
-    w2, _, above2 = mix_weight(mixb.df)
+    w2, _, above2, top2 = mix_weight(mixb.df)
+    assert top2 > mixb.df["close"].iloc[-1]                                  # 재진입 기준은 현재가보다 위
     assert not above2 and w2 == 0.0
     notes = run_once_ensemble(mixb, 0.5, mix=True)
-    assert mixb.calls == [("close", "long", 12.5)] and "구름 아래" in notes[0]
+    assert mixb.calls == [("close", "long", 12.5)] and "구름 아래" in notes[0] and f"{top2:,.0f}" in notes[0] and "재진입 기준" in notes[0]
+
+
+def test_next_cloud_top_equals_cloud_top_of_following_bar():
+    from crypto.upbit_indicators import ichimoku_lines, next_cloud_top
+    df = _ind_df(n=300)
+    nxt = next_cloud_top(df.iloc[:-1])                       # 마지막 봉 하나 전까지만 보고 계산한 '다음 봉' 구름 상단
+    assert abs(nxt - float(ichimoku_lines(df)["top"].iloc[-1])) < 1e-9   # 실제 다음 봉의 구름 상단과 같음(미래 정보 불필요)
