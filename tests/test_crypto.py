@@ -466,3 +466,32 @@ def test_portfolio_compare_shape_and_summary():
     assert len(rep) == 7 * 3 and corr.shape == (4, 4)
     txt = "\n".join(P.summary(rep, corr, P.COINS))
     assert "평균 상관" in txt and "세 구간 모두 낙폭 감소" in txt
+
+
+def test_load_data_retries_shorter_period_and_reports_all_failures(monkeypatch):
+    import pytest
+    from crypto import backtest_report as R
+
+    seen = []
+    def fake_fetch(ex, symbol, timeframe="4h", years=4.0, **k):
+        seen.append(years)
+        n = 0 if years >= 5 else 1000   # 먼 과거는 빈 결과(상장 전), 4년 이하는 충분
+        return synthetic_prices(max(n, 1), seed=1) if n else synthetic_prices(1, seed=1).iloc[0:0]
+    monkeypatch.setattr(R, "fetch_history", fake_fetch)
+    ex_id, df = R.load_data(7, "SOL/USDT:USDT", min_bars=800, timeframe="1d")
+    assert ex_id == "bitget" and len(df) == 1000 and seen == [7, 5, 4]   # 7년·5년은 비어 4년에 성공
+
+    monkeypatch.setattr(R, "fetch_history", lambda *a, **k: synthetic_prices(1, seed=1).iloc[0:0])
+    with pytest.raises(SystemExit) as e:
+        R.load_data(7, "XRP/USDT:USDT", min_bars=800, timeframe="1d")
+    msg = str(e.value)
+    assert "XRP/USDT:USDT" in msg and "bitget/7년: 봉 0개" in msg and "okx/2년: 봉 0개" in msg
+
+
+def test_load_data_first_success_unchanged_for_btc(monkeypatch):
+    from crypto import backtest_report as R
+
+    seen = []
+    monkeypatch.setattr(R, "fetch_history", lambda ex, sym, timeframe="4h", years=4.0, **k: (seen.append(years), synthetic_prices(1500, seed=2))[1])
+    ex_id, df = R.load_data(7, "BTC/USDT:USDT", min_bars=800, timeframe="1d")
+    assert seen == [7] and ex_id == "bitget"   # 기존 BTC 경로는 첫 시도에서 그대로 성공
