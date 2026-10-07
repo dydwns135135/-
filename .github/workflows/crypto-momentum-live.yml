@@ -1,0 +1,60 @@
+name: crypto-momentum-live (비트겟 실거래 - BTC 섞기 1배)
+
+# 실제 돈으로 주문한다. 레버리지 1배·롱만·BTC 섞기(앙상블 × 일목 구름). 데모용 crypto-momentum 과 키가 다르다.
+# - 수동 실행: action=check(기본)는 주문 없이 연결·잔고·계획만 확인, action=run 은 실제 주문.
+# - 실제 주문(run·스케줄)은 저장소 변수 LIVE_ENABLED=true 일 때만 동작.
+# - 포지션 금액 상한 LIVE_MAX_NOTIONAL(기본 70 USDT, 150 초과는 거부), 최소 잔고 LIVE_MIN_EQUITY(기본 50 USDT, 아래면 전량 청산·중단).
+# - 키: BITGET_LIVE_API_KEY / BITGET_LIVE_API_SECRET / BITGET_LIVE_API_PASSPHRASE (출금 권한 없는 실거래 키).
+on:
+  schedule:
+    - cron: "25 0 * * *"      # 일봉 마감(UTC 00:00, 한국 09:00) 직후, 데모 봇(00:15)과 겹치지 않게
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "check = 주문 없이 점검, run = 실제 주문"
+        type: choice
+        options: [check, run]
+        default: check
+
+concurrency:
+  group: crypto-futures-live
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-trader.txt
+      - run: pip install -r requirements-trader.txt
+      - name: Live
+        env:
+          BITGET_API_KEY: ${{ secrets.BITGET_LIVE_API_KEY }}
+          BITGET_API_SECRET: ${{ secrets.BITGET_LIVE_API_SECRET }}
+          BITGET_API_PASSPHRASE: ${{ secrets.BITGET_LIVE_API_PASSPHRASE }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ENABLED: ${{ vars.LIVE_ENABLED }}
+          ACTION: ${{ github.event_name == 'schedule' && 'run' || github.event.inputs.action || 'check' }}
+          MAX_NOTIONAL: ${{ vars.LIVE_MAX_NOTIONAL || '70' }}
+          MIN_EQUITY: ${{ vars.LIVE_MIN_EQUITY || '50' }}
+          MOMENTUM_CONFIRM_LIVE: "yes"
+        run: |
+          if [ -z "$BITGET_API_KEY" ] || [ -z "$BITGET_API_SECRET" ] || [ -z "$BITGET_API_PASSPHRASE" ]; then
+            echo "BITGET_LIVE_API_KEY / SECRET / PASSPHRASE 시크릿이 없습니다."; exit 1; fi
+          if awk "BEGIN{exit !($MAX_NOTIONAL > 150)}"; then
+            echo "LIVE_MAX_NOTIONAL=$MAX_NOTIONAL 은 150 USDT 상한을 넘습니다(올리려면 워크플로 수정 필요)."; exit 1; fi
+          CHECK=""
+          if [ "$ACTION" = "check" ]; then
+            CHECK="--check"
+          elif [ "$ENABLED" != "true" ]; then
+            if [ "${{ github.event_name }}" = "schedule" ]; then echo "LIVE_ENABLED!=true, 건너뜀"; exit 0; fi
+            echo "실제 주문은 저장소 변수 LIVE_ENABLED=true 일 때만 가능합니다."; exit 1
+          fi
+          python -m crypto.momentum_bot --live --mode mix --alloc 1.0 \
+            --max-notional "$MAX_NOTIONAL" --min-equity "$MIN_EQUITY" $CHECK
