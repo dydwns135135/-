@@ -1,0 +1,28 @@
+name: crypto-bb-rsi (볼린저 하단 + RSI 반등 지표 백테스트)
+
+# 공개 시세만 사용(API 키·주문 없음). TradingView 지표 진입 규칙 그대로, 청산은 사전 지정 2가지 백테스트한다.
+on:
+  workflow_dispatch:
+    inputs:
+      years:
+        description: "과거 몇 년치"
+        default: "3"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-trader.txt
+      - run: pip install -r requirements-trader.txt
+      - name: Backtest
+        run: python -m crypto.bb_rsi --years "${{ github.event.inputs.years || '3' }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bb-rsi
+          path: data/

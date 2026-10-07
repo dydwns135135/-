@@ -1211,3 +1211,53 @@ def test_emavol_compare_shape_and_costs_hurt_flipping():
     assert len(t) == 6 and {"연환산", "최대낙폭", "샤프", "거래횟수", "평균투입"} <= set(t.columns)
     assert t.loc["롱+숏 전체", "거래횟수"] > 0 and "보유 전체" in ev.fmt(t)
     assert sum(ev.signal_counts(df)) > 0
+
+
+def _bbrsi_df(n=500, drop_at=300):
+    import numpy as np
+    import pandas as pd
+    rng = np.random.default_rng(8)
+    c = 100 + np.cumsum(rng.normal(0, 0.3, n))
+    c[drop_at:drop_at + 6] = c[drop_at - 1] - np.array([3, 6, 9, 12, 15, 18])    # 급락 → 하단 이탈 + RSI 과매도
+    c[drop_at + 6:] = np.linspace(c[drop_at + 5], c[drop_at - 1] + 4, n - drop_at - 6)   # 이후 중심선 위로 반등
+    o = np.r_[c[0], c[:-1]]
+    idx = pd.date_range("2024-01-01", periods=n, freq="1h", tz="UTC")
+    return pd.DataFrame({"open": o, "high": np.maximum(o, c) + 0.2, "low": np.minimum(o, c) - 0.2, "close": c,
+                         "volume": np.full(n, 100.0)}, index=idx)
+
+
+def test_bbrsi_requires_both_conditions_and_warmup():
+    from crypto import bb_rsi as br
+    df = _bbrsi_df()
+    cond = br.buy_condition(df)
+    assert cond.iloc[300:306].any() and not cond.iloc[:60].any()
+    flat = _bbrsi_df()
+    flat["close"] = 100.0
+    assert not br.buy_condition(flat).any()
+
+
+def test_bbrsi_mid_exit_enters_next_open_exits_on_mid_and_costs_applied():
+    from crypto import bb_rsi as br
+    df = _bbrsi_df()
+    tr = br.backtest_mid_exit(df, "T")
+    assert len(tr) >= 1
+    first = tr.iloc[0]
+    i = df.index.get_loc(first["time"])
+    entry = df["open"].iloc[i + 1]
+    exit_open = df["open"].iloc[df.index.get_loc(first["exit"])]
+    assert abs(first["ret"] - (exit_open / entry - 1 - br.RT_COST)) < 1e-12
+    assert first["held"] <= br.TIMEOUT + 1
+    t = tr.sort_values("time")
+    assert (t["time"].iloc[1:].to_numpy() > t["exit"].iloc[:-1].to_numpy()).all()
+
+
+def test_bbrsi_r_variant_and_formatting():
+    from crypto import bb_rsi as br
+    from crypto import futures_signal as fs
+    df = _bbrsi_df()
+    tr = br.backtest_r(df, "T")
+    assert len(tr) >= 1 and (tr["net_r"] < tr["gross_r"]).all()
+    s = br.stats_mid(br.backtest_mid_exit(df, "T"), 0.06)
+    assert s["신호수"] >= 1 and "연환산(복리)" in br.fmt_mid({"T": s})
+    assert br.stats_mid(br.backtest_mid_exit(df, "T").iloc[0:0], 1.0)["신호수"] == 0
+    assert "승률" in fs.fmt_summary({"T": fs.summarize(tr, 30)})
