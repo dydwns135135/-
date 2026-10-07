@@ -660,3 +660,39 @@ def test_asset_mix_per_asset_funding_only_hits_that_asset():
     assert (1 + only_btc["BTC 보유"]).prod() < (1 + base["BTC 보유"]).prod()         # BTC 만 깎임
     assert abs(A.per8h(10.95) - 0.0001) < 1e-12                                       # 연 10.95% = 8시간 0.01%
     assert set(A.MEASURED) == {"BTC", "QQQ", "GLD"} and all(0 < v < 0.0001 for v in A.MEASURED.values())
+
+
+def test_position_budget_and_plan_respect_max_notional():
+    from crypto.momentum_bot import plan_rebalance, position_budget
+
+    assert position_budget(10_000, 0.5) == 5_000 and position_budget(10_000, 0.5, 300) == 300
+    assert position_budget(100, 0.5, 300) == 50                                  # 상한이 더 크면 잔고 기준
+    # 잔고 1만, 알로크 0.5, 상한 300, 가격 100 → 비중 100% = 3개
+    assert plan_rebalance(1.0, 0.5, 10_000, 100, 0, max_notional=300) == ("buy", 3.0)
+    assert plan_rebalance(1.0, 0.5, 10_000, 100, 50, max_notional=300) == ("sell", 47.0)   # 이미 상한 초과 → 줄임
+
+
+def test_kill_switch_flattens_and_blocks_new_entries_in_both_modes():
+    from crypto.momentum_bot import run_once, run_once_ensemble
+
+    up = list(np.linspace(100, 400, 320))
+    b = _EnsBroker(up, pos={"side": "long", "contracts": 12.5, "entry": 300.0}, bal=700.0)
+    notes = run_once_ensemble(b, 0.5, min_equity=1000.0)
+    assert b.calls == [("close", "long", 12.5)] and "차단 장치" in notes[0] and "자동 재개되지 않습니다" in notes[-1]
+    b2 = _EnsBroker(up, bal=700.0)                                                # 포지션 없음 + 강세여도 진입하지 않는다
+    notes2 = run_once_ensemble(b2, 0.5, min_equity=1000.0)
+    assert b2.calls == [] and "보유 포지션 없음" in notes2[1]
+    b3 = _MomBroker(up, bal=700.0)
+    assert "차단 장치" in run_once(b3, 90, 0.5, min_equity=1000.0)[0] and b3.calls == []
+    b4 = _EnsBroker(up, bal=1500.0)                                               # 잔고가 충분하면 정상 진입
+    run_once_ensemble(b4, 0.5, min_equity=1000.0)
+    assert b4.calls and b4.calls[0][:2] == ("open", "buy")
+
+
+def test_single_mode_entry_respects_max_notional():
+    from crypto.momentum_bot import run_once
+
+    up = list(np.linspace(100, 400, 320))
+    b = _MomBroker(up, bal=10_000.0)
+    run_once(b, 90, 0.5, max_notional=400.0)
+    assert b.calls == [("open", "buy", round(400.0 / 400, 5), None)]            # 잔고 50%(5000)가 아니라 상한 400 → 1개

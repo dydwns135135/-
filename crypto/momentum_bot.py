@@ -42,11 +42,17 @@ def ensemble_weight(closes: pd.Series, lookbacks=ENSEMBLE_LOOKBACKS) -> tuple[fl
     return pos / len(lookbacks), pos
 
 
+def position_budget(equity: float, alloc: float, max_notional: float | None = None) -> float:
+    """비중 100% 일 때의 포지션 금액(USDT). 잔고 × alloc 이되 max_notional 이 있으면 그 이하로 제한한다."""
+    budget = equity * alloc
+    return min(budget, max_notional) if max_notional else budget
+
+
 def plan_rebalance(target_w: float, alloc: float, equity: float, price: float, current: float,
-                   step: float = 0.10, min_notional: float = 6.0) -> tuple[str, float]:
+                   step: float = 0.10, min_notional: float = 6.0, max_notional: float | None = None) -> tuple[str, float]:
     """목표 비중(0~1)에 맞추기 위한 ('buy'|'sell'|'hold', 계약 수). 잔고 대비 step(기본 10%p) 미만의
     미세 조정과 최소 주문 금액 미만은 하지 않는다(수수료 절감). 목표가 0이면 전량 청산."""
-    full = equity * alloc / price  # 비중 100% 일 때의 수량
+    full = position_budget(equity, alloc, max_notional) / price  # 비중 100% 일 때의 수량
     delta = full * target_w - current
     if target_w <= 0:
         return ("sell", current) if current * price >= min_notional else ("hold", 0.0)
@@ -55,7 +61,23 @@ def plan_rebalance(target_w: float, alloc: float, equity: float, price: float, c
     return ("buy", delta) if delta > 0 else ("sell", -delta)
 
 
-def run_once_ensemble(broker, alloc: float = 0.5, stop_loss: float | None = None) -> list[str]:
+def kill_switch(broker, equity: float, min_equity: float | None) -> list[str] | None:
+    """잔고가 min_equity 아래면 전량 청산하고 알림 문구를 돌려준다(이후 신규 진입 없음). 해당 없으면 None."""
+    if not min_equity or equity >= min_equity:
+        return None
+    pos = broker.position()
+    msg = [f"🛑 차단 장치: 잔고 {equity:,.2f} < 최소 잔고 {min_equity:,.2f} → 신규 진입 중단"]
+    if pos:
+        broker.close(pos["side"], pos["contracts"])
+        msg.append(f"🔴 보유 {pos['contracts']} BTC 전량 청산")
+    else:
+        msg.append("보유 포지션 없음")
+    msg.append("자동 재개되지 않습니다. 원인을 확인한 뒤 MOMENTUM_MIN_EQUITY 를 낮추거나 비워서 재개하세요.")
+    return msg
+
+
+def run_once_ensemble(broker, alloc: float = 0.5, stop_loss: float | None = None,
+                      max_notional: float | None = None, min_equity: float | None = None) -> list[str]:
     candles = broker.closed_candles("1d", limit=max(ENSEMBLE_LOOKBACKS) + 40, deep=True)
     res = ensemble_weight(candles["close"])
     if res is None:
@@ -64,7 +86,10 @@ def run_once_ensemble(broker, alloc: float = 0.5, stop_loss: float | None = None
     pos = broker.position()
     current = float(pos["contracts"]) if pos else 0.0
     equity, px = broker.balance(), broker.price()
-    act, qty = plan_rebalance(w, alloc, equity, px, current)
+    killed = kill_switch(broker, equity, min_equity)
+    if killed:
+        return killed
+    act, qty = plan_rebalance(w, alloc, equity, px, current, max_notional=max_notional)
     head = (f"앙상블 모멘텀: {len(ENSEMBLE_LOOKBACKS)}개 기간 중 {npos}개 양(+) → 목표 비중 {w:.0%} "
             f"(잔고의 {w * alloc:.0%}), 현재 {current:.5f} BTC")
     if act == "buy":
@@ -78,7 +103,8 @@ def run_once_ensemble(broker, alloc: float = 0.5, stop_loss: float | None = None
     return [head, "조정 없음(차이가 작거나 최소 주문 미만)"]
 
 
-def run_once(broker, lookback: int = 90, alloc: float = 0.5, stop_loss: float | None = None) -> list[str]:
+def run_once(broker, lookback: int = 90, alloc: float = 0.5, stop_loss: float | None = None,
+             max_notional: float | None = None, min_equity: float | None = None) -> list[str]:
     candles = broker.closed_candles("1d", limit=lookback + 40, deep=True)
     want = momentum_positive(candles["close"], lookback)
     if want is None:
@@ -86,12 +112,15 @@ def run_once(broker, lookback: int = 90, alloc: float = 0.5, stop_loss: float | 
     last = candles["close"].iloc[-1]
     ref = candles["close"].iloc[-1 - lookback]
     pos = broker.position()
+    killed = kill_switch(broker, broker.balance(), min_equity)
+    if killed:
+        return killed
     act = decide(want, pos is not None)
     head = f"{lookback}일 모멘텀 {'양(+)' if want else '음(-)'}: 종가 {last:,.0f} vs {lookback}일 전 {ref:,.0f} ({last / ref - 1:+.1%})"
 
     if act == "open":
         px = broker.price()
-        amount = broker.balance() * alloc / px  # 레버리지 1배 기준 비중
+        amount = position_budget(broker.balance(), alloc, max_notional) / px  # 레버리지 1배 기준 비중(상한 적용)
         stop = px * (1 - stop_loss) if stop_loss else None
         broker.open("buy", amount, stop)
         return [head, f"🟢 롱 진입 {amount:.5f} BTC @ ~{px:,.0f} (잔고의 {alloc:.0%})" + (f", 손절 {stop:,.0f}" if stop else "")]
@@ -109,6 +138,8 @@ def main() -> None:
     ap.add_argument("--stop-loss", type=float, default=None, help="선택: 진입가 대비 손절 비율(백테스트에는 없음)")
     ap.add_argument("--mode", choices=["single", "ensemble"], default="single",
                     help="single: lookback 하나 / ensemble: 30~250일 8개 기간의 양(+) 비율만큼 보유")
+    ap.add_argument("--max-notional", type=float, default=None, help="포지션 금액 상한(USDT). 잔고가 커도 이 금액을 넘기지 않음")
+    ap.add_argument("--min-equity", type=float, default=None, help="최소 잔고(USDT). 이 아래면 전량 청산하고 신규 진입 중단")
     ap.add_argument("--live", action="store_true")
     a = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -118,8 +149,8 @@ def main() -> None:
     from .exchange import BitgetFutures
     try:
         broker = BitgetFutures.from_env(a.symbol, 1, demo=not a.live)  # 레버리지 1배 고정
-        notes = (run_once_ensemble(broker, a.alloc, a.stop_loss) if a.mode == "ensemble"
-                 else run_once(broker, a.lookback, a.alloc, a.stop_loss))
+        notes = (run_once_ensemble(broker, a.alloc, a.stop_loss, a.max_notional, a.min_equity) if a.mode == "ensemble"
+                 else run_once(broker, a.lookback, a.alloc, a.stop_loss, a.max_notional, a.min_equity))
     except Exception as e:
         notify.send(f"❌ 모멘텀봇 오류 [{mode}]: {type(e).__name__}: {str(e)[:300]}")
         raise
