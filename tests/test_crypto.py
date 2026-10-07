@@ -614,3 +614,37 @@ def test_asset_mix_yahoo_request_pins_period_for_daily_data(monkeypatch):
     monkeypatch.setattr(A.requests, "get", fake_get)
     A.fetch_yahoo("QQQ")
     assert "range" not in seen and seen["interval"] == "1d" and seen["period1"] == 0 and seen["period2"] > 1_700_000_000
+
+
+def test_funding_summarize_interval_and_annualization():
+    from crypto.funding_check import summarize
+
+    h = 3_600_000
+    rows8 = [{"timestamp": 1_700_000_000_000 + i * 8 * h, "fundingRate": 0.0001} for i in range(30)]   # 8시간마다 0.01%
+    s = summarize(rows8)
+    assert s["정산간격(h)"] == 8.0 and abs(s["연환산(%)"] - 0.0001 * 3 * 365 * 100) < 1e-6 and s["양수비율(%)"] == 100
+    rows1 = [{"timestamp": 1_700_000_000_000 + i * h, "fundingRate": -0.00002} for i in range(50)]      # 1시간마다 -0.002%
+    s1 = summarize(rows1)
+    assert s1["정산간격(h)"] == 1.0 and s1["연환산(%)"] < 0 and abs(s1["연환산(%)"] + 0.00002 * 8760 * 100) < 1e-6   # 롱이 받는다
+    import pytest
+    with pytest.raises(ValueError, match="너무 적음"):
+        summarize(rows8[:2])
+
+
+def test_funding_history_paginates_backwards_without_duplicates():
+    from crypto.funding_check import history
+
+    h = 8 * 3_600_000
+    allrows = [{"timestamp": 1_700_000_000_000 + i * h, "fundingRate": 0.0001} for i in range(250)]
+
+    class Ex:
+        calls = 0
+        def fetch_funding_rate_history(self, sym, limit=100, params=None):
+            Ex.calls += 1
+            until = (params or {}).get("until")
+            pool = [r for r in allrows if until is None or r["timestamp"] <= until]
+            return pool[-limit:]
+
+    rows = history(Ex(), "X/USDT:USDT", pages=6)
+    ts = [r["timestamp"] for r in rows]
+    assert len(rows) == 250 and ts == sorted(set(ts)) and Ex.calls == 3
