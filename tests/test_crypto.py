@@ -525,3 +525,48 @@ def test_market_survey_probe_shortens_period_until_data(monkeypatch):
     assert r["bars"] == 300 and r["req_years"] == 2 and seen == [8, 5, 3, 2]
     monkeypatch.setattr(M, "fetch_history", lambda *a, **k: synthetic_prices(1, seed=3).iloc[0:0])
     assert M.probe(object(), "X/USDT:USDT")["bars"] == 0
+
+
+def test_asset_mix_parse_yahoo_adjusts_open_and_drops_nulls():
+    from crypto.asset_mix import parse_ohlc
+
+    ts = [1_600_000_000 + i * 86400 for i in range(4)]
+    df = parse_ohlc(ts, [10.0, 20.0, None, 40.0], [10.0, 20.0, 30.0, 40.0], adjclose=[5.0, 10.0, 15.0, 40.0])
+    assert len(df) == 3                                   # None 행 제거
+    assert df["close"].iloc[0] == 5.0 and df["open"].iloc[0] == 5.0   # 조정비율 0.5 가 시가에도 적용
+    assert df["close"].iloc[-1] == 40.0 and df["open"].iloc[-1] == 40.0
+
+
+def test_asset_mix_calendar_fills_weekends_with_zero_pnl():
+    from crypto.asset_mix import to_calendar
+
+    idx = pd.to_datetime(["2024-01-05", "2024-01-08"], utc=True)      # 금 → 월
+    df = to_calendar(pd.DataFrame({"open": [10.0, 11.0], "close": [10.5, 11.5]}, index=idx))
+    assert len(df) == 4 and list(df["close"].round(2)) == [10.5, 10.5, 10.5, 11.5]
+    assert df["open"].iloc[1] == 10.5 and df["open"].iloc[2] == 10.5   # 주말 시가=종가=직전 종가
+
+
+def test_asset_mix_build_equal_weight_and_funding_effect():
+    from crypto import asset_mix as A
+
+    d = {"BTC": synthetic_prices(900, seed=31, vol=0.02), "QQQ": synthetic_prices(900, seed=32, vol=0.01), "GLD": synthetic_prices(900, seed=33, vol=0.008)}
+    d = {k: v[["open", "close"]] for k, v in d.items()}
+    p0, p1 = A.build(d, 0.0), A.build(d, 0.0001)
+    assert "3자산 앙상블(등분)" in p0 and all(len(v) == len(p0["BTC 보유"]) for v in p0.values())
+    assert ((1 + p1["BTC 보유"]).prod()) < ((1 + p0["BTC 보유"]).prod())       # 펀딩비가 보유 수익을 깎음
+    mean = (p0["BTC 앙상블"] + p0["QQQ 앙상블"] + p0["GLD 앙상블"]) / 3
+    pd.testing.assert_series_equal(p0["3자산 앙상블(등분)"], mean, check_names=False)
+
+
+def test_asset_mix_load_asset_reports_all_failures(monkeypatch):
+    import pytest
+    from crypto import asset_mix as A
+
+    def boom(*a, **k): raise RuntimeError("HTTP 429")
+    monkeypatch.setattr(A, "fetch_yahoo", boom)
+    monkeypatch.setattr(A, "fetch_stooq", boom)
+    with pytest.raises(SystemExit) as e:
+        A.load_asset("QQQ")
+    assert "yahoo" in str(e.value) and "stooq" in str(e.value) and "429" in str(e.value)
+    monkeypatch.setattr(A, "fetch_stooq", lambda c: synthetic_prices(10, seed=1)[["open", "close"]])
+    assert A.load_asset("GLD")[0] == "stooq"                                  # 야후 실패 → 스투크 폴백
