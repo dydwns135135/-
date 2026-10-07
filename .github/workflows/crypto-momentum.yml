@@ -32,6 +32,11 @@ jobs:
           LOOKBACK: ${{ vars.MOMENTUM_LOOKBACK || '90' }}
           ALLOC: ${{ vars.MOMENTUM_ALLOC || '0.5' }}
           MODE: ${{ vars.MOMENTUM_MODE || 'single' }}
+          MAX_NOTIONAL: ${{ vars.MOMENTUM_MAX_NOTIONAL }}   # 선택: 포지션 금액 상한(USDT)
+          MIN_EQUITY: ${{ vars.MOMENTUM_MIN_EQUITY }}       # 선택: 최소 잔고(USDT), 아래면 전량 청산·중단
         run: |
           if [ "${{ github.event_name }}" = "schedule" ] && [ "$ENABLED" != "true" ]; then echo "MOMENTUM_ENABLED!=true, 건너뜀"; exit 0; fi
-          python -m crypto.momentum_bot --mode "$MODE" --lookback "$LOOKBACK" --alloc "$ALLOC"
+          EXTRA=""
+          if [ -n "$MAX_NOTIONAL" ]; then EXTRA="$EXTRA --max-notional $MAX_NOTIONAL"; fi
+          if [ -n "$MIN_EQUITY" ]; then EXTRA="$EXTRA --min-equity $MIN_EQUITY"; fi
+          python -m crypto.momentum_bot --mode "$MODE" --lookback "$LOOKBACK" --alloc "$ALLOC" $EXTRA
