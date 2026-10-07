@@ -99,11 +99,21 @@ def to_calendar(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def build(dfs: dict[str, pd.DataFrame], funding: float) -> dict[str, pd.Series]:
-    """전략별 일 손익률(WARM 제외). dfs 는 같은 달력 일자 인덱스."""
+def per8h(annual_pct: float) -> float:
+    """연 펀딩비(%) → 8시간당 비율(simulate 의 funding_per_8h 형식)."""
+    return annual_pct / 100 / (365 * 3)
+
+
+# 실측(crypto-funding-check, Bitget, 롱 기준 연환산): BTC 6.6%(33일), QQQ 6.5%(33일), 금 XAUT 8.0%(16일). 짧은 기간의 평균.
+MEASURED = {"BTC": per8h(6.6), "QQQ": per8h(6.5), "GLD": per8h(8.0)}
+
+
+def build(dfs: dict[str, pd.DataFrame], funding: float | dict[str, float]) -> dict[str, pd.Series]:
+    """전략별 일 손익률(WARM 제외). dfs 는 같은 달력 일자 인덱스. funding 은 상수 또는 자산별 8시간당 비율."""
     names = list(dfs)
-    ens = {k: st.simulate(d.assign(high=d["close"], low=d["close"]), st.momentum_ensemble(d), funding_per_8h=funding) for k, d in dfs.items()}
-    hold = {k: st.simulate(d.assign(high=d["close"], low=d["close"]), st.buy_hold(d), funding_per_8h=funding) for k, d in dfs.items()}
+    fund = (lambda k: funding[k]) if isinstance(funding, dict) else (lambda k: funding)
+    ens = {k: st.simulate(d.assign(high=d["close"], low=d["close"]), st.momentum_ensemble(d), funding_per_8h=fund(k)) for k, d in dfs.items()}
+    hold = {k: st.simulate(d.assign(high=d["close"], low=d["close"]), st.buy_hold(d), funding_per_8h=fund(k)) for k, d in dfs.items()}
     out: dict[str, pd.Series] = {}
     for k in names:
         out[f"{k} 보유"] = hold[k]
@@ -114,7 +124,7 @@ def build(dfs: dict[str, pd.DataFrame], funding: float) -> dict[str, pd.Series]:
     return {k: v.iloc[WARM:] for k, v in out.items()}
 
 
-def compare(dfs: dict[str, pd.DataFrame], funding: float) -> pd.DataFrame:
+def compare(dfs: dict[str, pd.DataFrame], funding: float | dict[str, float]) -> pd.DataFrame:
     pnls = build(dfs, funding)
     n = len(next(iter(pnls.values())))
     cut = int(n * 0.6)
@@ -160,7 +170,9 @@ def common(raw: dict[str, pd.DataFrame], names: list[str]) -> dict[str, pd.DataF
 def section(title: str, dfs: dict[str, pd.DataFrame], names: list[str]) -> str:
     idx = next(iter(dfs.values())).index
     out = [f"=== {title}: {', '.join(names)} | 공통 {len(idx)}일 {idx[0]:%Y-%m-%d}~{idx[-1]:%Y-%m-%d} (앞 {WARM}일 제외) ==="]
-    for label, fund in (("(a) 펀딩비 없음(현물·ETF 가정)", 0.0), ("(b) 선물 펀딩비 연 ~11% 가정", 0.0001)):
+    for label, fund in (("(a) 펀딩비 없음(현물·ETF 가정)", 0.0),
+                        ("(b) 선물 펀딩비 연 ~11% 가정(코인 기준, 보수적)", 0.0001),
+                        ("(c) 실측 펀딩비(최근 16~33일 평균: BTC 6.6%·QQQ 6.5%·금 XAUT 8.0%/년)", MEASURED)):
         rep = compare(dfs, fund)
         out += ["", f"--- {label} ---", fmt(rep), "", *summary(rep, names)]
     c = weekday_corr(dfs)

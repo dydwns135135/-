@@ -648,3 +648,15 @@ def test_funding_history_paginates_backwards_without_duplicates():
     rows = history(Ex(), "X/USDT:USDT", pages=6)
     ts = [r["timestamp"] for r in rows]
     assert len(rows) == 250 and ts == sorted(set(ts)) and Ex.calls == 3
+
+
+def test_asset_mix_per_asset_funding_only_hits_that_asset():
+    from crypto import asset_mix as A
+
+    d = {k: v[["open", "close"]] for k, v in {"BTC": synthetic_prices(700, seed=41, vol=0.02), "QQQ": synthetic_prices(700, seed=42, vol=0.01)}.items()}
+    base = A.build(d, 0.0)
+    only_btc = A.build(d, {"BTC": A.per8h(10.0), "QQQ": 0.0})
+    pd.testing.assert_series_equal(only_btc["QQQ 보유"], base["QQQ 보유"])           # QQQ 는 펀딩비 영향 없음
+    assert (1 + only_btc["BTC 보유"]).prod() < (1 + base["BTC 보유"]).prod()         # BTC 만 깎임
+    assert abs(A.per8h(10.95) - 0.0001) < 1e-12                                       # 연 10.95% = 8시간 0.01%
+    assert set(A.MEASURED) == {"BTC", "QQQ", "GLD"} and all(0 < v < 0.0001 for v in A.MEASURED.values())
