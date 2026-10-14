@@ -17,6 +17,26 @@ def cmd_check(args):
     broker.shutdown()
 
 
+def cmd_test_order(args):
+    """주문 경로 검증: 최소 랏으로 SL/TP 포함 매수 1건 체결 후 즉시 청산. 데모 전용."""
+    info = broker.connect(False)  # 실계좌면 여기서 종료
+    try:
+        lots = args.lots or broker.min_volume(args.symbol)
+        res = broker.open_order(args.symbol, "buy", lots, args.sl, args.tp)
+        print(f"진입 성공: {res}", flush=True)
+        time.sleep(2)
+        pos = broker.positions(args.symbol)
+        if not pos:
+            print("경고: 포지션이 조회되지 않습니다(이미 SL/TP 체결?)")
+            return
+        p = pos[0]
+        print(f"보유 확인: ticket {p.ticket} 볼륨 {p.volume} SL {p.sl} TP {p.tp} 손익 {p.profit}", flush=True)
+        r = broker.close_position(p)
+        print(f"청산 성공: 체결가 {r.price}", flush=True)
+    finally:
+        broker.shutdown()
+
+
 def cmd_run(args):
     broker.connect(args.allow_live)
     print(f"시작: {args.symbol} M5, RSI({args.period}) {args.oversold}/{args.overbought}, "
@@ -50,7 +70,7 @@ def cmd_run(args):
 
 def main():
     ap = argparse.ArgumentParser(prog="mt5bot")
-    ap.add_argument("command", choices=["check", "run"])
+    ap.add_argument("command", choices=["check", "run", "test-order"])
     ap.add_argument("--symbol", default="XAUUSD")
     ap.add_argument("--period", type=int, default=14)
     ap.add_argument("--oversold", type=float, default=30)
@@ -62,7 +82,7 @@ def main():
     ap.add_argument("--poll", type=int, default=5, help="폴링 간격(초)")
     ap.add_argument("--allow-live", action="store_true", help="실계좌 허용(기본 거부)")
     args = ap.parse_args()
-    {"check": cmd_check, "run": cmd_run}[args.command](args)
+    {"check": cmd_check, "run": cmd_run, "test-order": cmd_test_order}[args.command](args)
 
 
 if __name__ == "__main__":

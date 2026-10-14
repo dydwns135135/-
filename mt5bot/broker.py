@@ -83,6 +83,10 @@ def calc_volume(symbol, sl_dist, risk_money):
     return round(lots, 2)
 
 
+def min_volume(symbol):
+    return _mt5().symbol_info(symbol).volume_min
+
+
 def _filling(symbol):
     mt5 = _mt5()
     mode = mt5.symbol_info(symbol).filling_mode
