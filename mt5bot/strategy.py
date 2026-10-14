@@ -28,3 +28,17 @@ def sl_tp_prices(side, price, sl_dist, tp_dist, digits):
     else:
         sl, tp = price + sl_dist, price - tp_dist
     return round(sl, digits), round(tp, digits)
+
+
+def trend_ok(side, price, ema_value):
+    """추세 필터: 장기 EMA 위에서는 매수만, 아래에서는 매도만 허용. EMA 미계산이면 거부."""
+    if ema_value is None:
+        return False
+    return price > ema_value if side == "buy" else price < ema_value
+
+
+def daily_loss_hit(day_start_equity, equity, max_loss_pct):
+    """오늘 시작 자산 대비 손실이 한도(%) 이상이면 True. max_loss_pct<=0 이면 사용 안 함."""
+    if max_loss_pct <= 0 or day_start_equity <= 0:
+        return False
+    return (day_start_equity - equity) / day_start_equity * 100.0 >= max_loss_pct

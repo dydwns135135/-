@@ -27,3 +27,32 @@ def test_sl_tp():
     assert sl_tp_prices("sell", 2000.0, 5, 10, 2) == (2005.0, 1990.0)
     with pytest.raises(ValueError):
         sl_tp_prices("buy", 2000.0, 0, 10, 2)
+
+
+from mt5bot.indicators import atr, ema
+from mt5bot.strategy import daily_loss_hit, trend_ok
+
+
+def test_ema():
+    e = ema([1.0] * 10, 5)
+    assert e[3] is None and e[4] == 1.0 and e[-1] == 1.0
+    assert ema(list(range(1, 11)), 3)[-1] > ema(list(range(1, 11)), 5)[-1]
+
+
+def test_atr_constant_range():
+    n = 30
+    highs, lows, closes = [101.0] * n, [99.0] * n, [100.0] * n
+    a = atr(highs, lows, closes, 14)
+    assert a[13] is None and abs(a[-1] - 2.0) < 1e-9
+
+
+def test_trend_ok():
+    assert trend_ok("buy", 101, 100) and not trend_ok("buy", 99, 100)
+    assert trend_ok("sell", 99, 100) and not trend_ok("sell", 101, 100)
+    assert not trend_ok("buy", 101, None)
+
+
+def test_daily_loss():
+    assert daily_loss_hit(1000, 979, 2.0)
+    assert not daily_loss_hit(1000, 985, 2.0)
+    assert not daily_loss_hit(1000, 500, 0)

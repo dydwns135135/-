@@ -53,8 +53,8 @@ def account_summary():
     }
 
 
-def get_closes(symbol, count=300):
-    """5분봉 종가. 마지막(진행 중) 봉은 제외하고 확정된 봉만 돌려준다. (시각 리스트, 종가 리스트)"""
+def get_rates(symbol, count=600):
+    """5분봉 확정봉만(진행 중인 마지막 봉 제외). (시각, 고가, 저가, 종가) 리스트 4개."""
     mt5 = _mt5()
     if not mt5.symbol_select(symbol, True):
         raise RuntimeError(f"심볼 선택 실패 {symbol}: {mt5.last_error()}")
@@ -62,7 +62,13 @@ def get_closes(symbol, count=300):
     if rates is None or len(rates) < 2:
         raise RuntimeError(f"캔들 수집 실패: {mt5.last_error()}")
     rates = rates[:-1]
-    return [datetime.fromtimestamp(int(r["time"])) for r in rates], [float(r["close"]) for r in rates]
+    return ([datetime.fromtimestamp(int(r["time"])) for r in rates],
+            [float(r["high"]) for r in rates], [float(r["low"]) for r in rates],
+            [float(r["close"]) for r in rates])
+
+
+def equity():
+    return _mt5().account_info().equity
 
 
 def positions(symbol):
