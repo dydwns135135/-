@@ -16,3 +16,12 @@ python -m mt5bot run        # 자동매매 (데모 계좌만 허용)
 - 랏: `--risk`(기본 10, 계좌 통화)만큼만 손실되도록 계산, `--lots` 로 고정 가능.
 - 실계좌는 `--allow-live` 없이는 실행 거부. 슬리피지(요청가 vs 체결가)는 진입 로그에 출력되므로 데모에서 충분히 확인 후 사용.
 - 심볼 이름은 브로커마다 다를 수 있음(`GOLD`, `XAUUSD.m` 등) → `--symbol`.
+
+## 알림 모드 (폰 MT5 에서 수동 매매)
+주문은 내지 않고 진입/청산 타이밍만 텔레그램으로 알려 준다. (PC 에서 켜 두고, 폰 MT5 앱으로 직접 주문)
+```
+set TELEGRAM_BOT_TOKEN=BotFather 에서 받은 토큰
+python -m mt5bot telegram-test          # chat id 확인 + 테스트 알림 (봇에게 먼저 메시지 보낼 것)
+set TELEGRAM_CHAT_ID=위에서 나온 private 숫자
+python -m mt5bot alert --symbol GOLD
+```

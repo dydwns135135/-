@@ -1,11 +1,11 @@
-"""사용: python -m mt5bot check | run | test-order  (옵션은 --help)"""
+"""사용: python -m mt5bot check | run | test-order | alert | telegram-test  (옵션은 --help)"""
 import argparse
 import time
 from datetime import date
 
-from . import broker
+from . import broker, notify
 from .indicators import atr, ema, rsi
-from .strategy import daily_loss_hit, entry_signal, should_exit, trend_ok
+from .strategy import daily_loss_hit, entry_signal, should_exit, sl_tp_prices, trend_ok, virtual_exit
 
 
 def cmd_check(args):
@@ -35,6 +35,67 @@ def cmd_test_order(args):
         print(f"보유 확인: ticket {p.ticket} 볼륨 {p.volume} SL {p.sl} TP {p.tp} 손익 {p.profit}", flush=True)
         r = broker.close_position(p)
         print(f"청산 성공: 체결가 {r.price}", flush=True)
+    finally:
+        broker.shutdown()
+
+
+def cmd_telegram_test(args):
+    res, ids = notify.find_chat_ids()
+    if not res.get("ok"):
+        print(f"토큰 확인 실패: {res.get('description')}")
+        return
+    for cid, kind in ids.items():
+        print(f"chat id 후보: {cid} ({kind})  <- private 인 숫자가 내 번호")
+    if not ids:
+        print("봇이 받은 메시지가 없습니다. 텔레그램에서 내 봇에게 아무 메시지나 보낸 뒤 다시 실행하세요.")
+    r = notify.send("알림 테스트: MT5 봇 알림이 연결되었습니다.")
+    print("테스트 알림 전송 성공(텔레그램 확인)" if r.get("ok") else f"테스트 알림 실패: {r.get('description')}")
+
+
+def cmd_alert(args):
+    """주문은 내지 않고, 진입/청산 타이밍을 텔레그램으로 알린다(폰 MT5 에서 수동 매매용)."""
+    broker.connect(True)  # 조회만 하므로 데모/실계좌 모두 허용
+    def say(msg):
+        print(msg, flush=True)
+        r = notify.send(msg)
+        if not r.get("ok"):
+            print(f"  (텔레그램 전송 실패: {r.get('description')})", flush=True)
+    say(f"알림 모드 시작: {args.symbol} M5 RSI({args.period}) {args.oversold}/{args.overbought}, "
+        f"추세필터 {'EMA'+str(args.ema_period) if not args.no_trend_filter else '끔'}. 주문은 내지 않습니다.")
+    digits = 2
+    last_bar, virt = None, None
+    try:
+        while True:
+            times, highs, lows, closes = broker.get_rates(args.symbol, 600)
+            if times[-1] != last_bar:
+                last_bar = times[-1]
+                r = rsi(closes, args.period)
+                if virt:
+                    out = virtual_exit(virt["side"], virt["sl"], virt["tp"], highs[-1], lows[-1], r[-1])
+                    if out:
+                        reason, px = out
+                        say(f"[청산 알림] {args.symbol} {virt['side'].upper()} 정리 고려\n사유: {reason}"
+                            + (f"\n기준가: {px}" if px else f"\n현재가(종가): {closes[-1]}"))
+                        virt = None
+                else:
+                    sig = entry_signal(r[-2], r[-1], args.oversold, args.overbought)
+                    if sig:
+                        e = ema(closes, args.ema_period)[-1]
+                        if not args.no_trend_filter and not trend_ok(sig, closes[-1], e):
+                            print(f"{last_bar} 신호 {sig} 무시: 추세 불일치(종가 {closes[-1]} EMA {e:.2f})", flush=True)
+                        else:
+                            a = atr(highs, lows, closes, args.atr_period)[-1]
+                            sl_d = args.sl or args.sl_atr * a
+                            tp_d = args.tp or args.tp_atr * a
+                            sl, tp = sl_tp_prices(sig, closes[-1], sl_d, tp_d, digits)
+                            virt = {"side": sig, "sl": sl, "tp": tp}
+                            say(f"[진입 알림] {args.symbol} {'매수(BUY)' if sig == 'buy' else '매도(SELL)'}\n"
+                                f"기준가(종가): {closes[-1]}  RSI {r[-1]:.1f}\n"
+                                f"손절(SL): {sl}  익절(TP): {tp}  (ATR {a:.2f})\n"
+                                f"폰 MT5 에서 주문 시 SL/TP 를 꼭 같이 입력하세요. 시각 {last_bar}")
+            time.sleep(args.poll)
+    except KeyboardInterrupt:
+        print("중지")
     finally:
         broker.shutdown()
 
@@ -87,7 +148,7 @@ def cmd_run(args):
 
 def main():
     ap = argparse.ArgumentParser(prog="mt5bot")
-    ap.add_argument("command", choices=["check", "run", "test-order"])
+    ap.add_argument("command", choices=["check", "run", "test-order", "alert", "telegram-test"])
     ap.add_argument("--symbol", default="XAUUSD")
     ap.add_argument("--period", type=int, default=14, help="RSI 기간")
     ap.add_argument("--oversold", type=float, default=30)
@@ -108,7 +169,8 @@ def main():
     args = ap.parse_args()
     if bool(args.sl) != bool(args.tp):
         ap.error("--sl 과 --tp 는 함께 지정하세요(또는 둘 다 생략하고 ATR 사용)")
-    {"check": cmd_check, "run": cmd_run, "test-order": cmd_test_order}[args.command](args)
+    {"check": cmd_check, "run": cmd_run, "test-order": cmd_test_order,
+     "alert": cmd_alert, "telegram-test": cmd_telegram_test}[args.command](args)
 
 
 if __name__ == "__main__":

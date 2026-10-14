@@ -42,3 +42,20 @@ def daily_loss_hit(day_start_equity, equity, max_loss_pct):
     if max_loss_pct <= 0 or day_start_equity <= 0:
         return False
     return (day_start_equity - equity) / day_start_equity * 100.0 >= max_loss_pct
+
+
+def virtual_exit(side, sl, tp, high, low, rsi_now, exit_level=50.0):
+    """알림 모드용 가상 포지션 청산 판정. (사유, 가격) 또는 None. 한 봉에 SL/TP 가 동시에 닿으면 SL 로 본다."""
+    if side == "buy":
+        if low <= sl:
+            return "손절(SL) 도달", sl
+        if high >= tp:
+            return "익절(TP) 도달", tp
+    else:
+        if high >= sl:
+            return "손절(SL) 도달", sl
+        if low <= tp:
+            return "익절(TP) 도달", tp
+    if should_exit(side, rsi_now, exit_level):
+        return f"RSI {rsi_now:.1f} 중립선(50) 되돌파", None
+    return None

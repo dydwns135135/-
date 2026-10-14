@@ -56,3 +56,15 @@ def test_daily_loss():
     assert daily_loss_hit(1000, 979, 2.0)
     assert not daily_loss_hit(1000, 985, 2.0)
     assert not daily_loss_hit(1000, 500, 0)
+
+
+from mt5bot.strategy import virtual_exit
+
+
+def test_virtual_exit():
+    assert virtual_exit("buy", 95, 110, 105, 94, 40)[0].startswith("손절")
+    assert virtual_exit("buy", 95, 110, 111, 99, 40)[0].startswith("익절")
+    assert virtual_exit("buy", 95, 110, 111, 94, 40)[0].startswith("손절")  # 동시 도달은 SL
+    assert virtual_exit("sell", 105, 90, 101, 89, 60)[0].startswith("익절")
+    assert virtual_exit("buy", 95, 110, 100, 99, 55)[0].startswith("RSI")
+    assert virtual_exit("buy", 95, 110, 100, 99, 45) is None
