@@ -75,47 +75,75 @@ def cmd_telegram_test(args):
     print("테스트 알림 전송 성공(텔레그램 확인)" if r.get("ok") else f"테스트 알림 실패: {r.get('description')}")
 
 
+_warned = [False]
+
+
+def _tell(msg):
+    """콘솔에 출력하고, 텔레그램이 설정되어 있으면 알림도 보낸다. 실패해도 매매는 계속(실패 문구는 한 번만 표시)."""
+    print(msg, flush=True)
+    r = notify.send(msg)
+    if not r.get("ok") and not _warned[0]:
+        _warned[0] = True
+        print(f"  (텔레그램 전송 안 됨: {r.get('description')} - 이후 실패는 표시하지 않음)", flush=True)
+
+
+def _heartbeat(args, times, closes, r, e, extra=""):
+    trend = "상승(롱만)" if closes[-1] > e else "하락(숏만)"
+    if args.no_trend_filter:
+        trend = "필터 끔"
+    return (f"[정상 작동 중] {args.symbol} {times[-1]:%m-%d %H:%M} 종가 {closes[-1]} "
+            f"RSI {r[-1]:.1f} EMA{args.ema_period} {e:.2f} ({trend}){extra}")
+
+
 def cmd_alert(args):
     """주문은 내지 않고, 진입/청산 타이밍을 텔레그램으로 알린다(폰 MT5 에서 수동 매매용)."""
     broker.connect(True)  # 조회만 하므로 데모/실계좌 모두 허용
-    def say(msg):
-        print(msg, flush=True)
-        r = notify.send(msg)
-        if not r.get("ok"):
-            print(f"  (텔레그램 전송 실패: {r.get('description')})", flush=True)
-    say(f"알림 모드 시작: {args.symbol} M5 RSI({args.period}) {args.oversold}/{args.overbought}, "
-        f"추세필터 {'EMA'+str(args.ema_period) if not args.no_trend_filter else '끔'}. 주문은 내지 않습니다.")
+    _tell(f"알림 모드 시작: {args.symbol} M5 RSI({args.period}) {args.oversold}/{args.overbought}, "
+          f"추세필터 {'EMA'+str(args.ema_period) if not args.no_trend_filter else '끔'}. 주문은 내지 않습니다.")
     digits = 2
-    last_bar, virt = None, None
+    last_bar, virt, errors = None, None, 0
+    last_hb = time.monotonic()
     try:
         while True:
-            times, highs, lows, closes = broker.get_rates(args.symbol, 600)
-            if times[-1] != last_bar:
-                last_bar = times[-1]
+            try:
+                times, highs, lows, closes = broker.get_rates(args.symbol, 600)
                 r = rsi(closes, args.period)
-                if virt:
-                    out = virtual_exit(virt["side"], virt["sl"], virt["tp"], highs[-1], lows[-1], r[-1])
-                    if out:
-                        reason, px = out
-                        say(f"[청산 알림] {args.symbol} {virt['side'].upper()} 정리 고려\n사유: {reason}"
-                            + (f"\n기준가: {px}" if px else f"\n현재가(종가): {closes[-1]}"))
-                        virt = None
-                else:
-                    sig = entry_signal(r[-2], r[-1], args.oversold, args.overbought)
-                    if sig:
-                        e = ema(closes, args.ema_period)[-1]
-                        if not args.no_trend_filter and not trend_ok(sig, closes[-1], e):
-                            print(f"{last_bar} 신호 {sig} 무시: 추세 불일치(종가 {closes[-1]} EMA {e:.2f})", flush=True)
-                        else:
-                            a = atr(highs, lows, closes, args.atr_period)[-1]
-                            sl_d = args.sl or args.sl_atr * a
-                            tp_d = args.tp or args.tp_atr * a
-                            sl, tp = sl_tp_prices(sig, closes[-1], sl_d, tp_d, digits)
-                            virt = {"side": sig, "sl": sl, "tp": tp}
-                            say(f"[진입 알림] {args.symbol} {'매수(BUY)' if sig == 'buy' else '매도(SELL)'}\n"
-                                f"기준가(종가): {closes[-1]}  RSI {r[-1]:.1f}\n"
-                                f"손절(SL): {sl}  익절(TP): {tp}  (ATR {a:.2f})\n"
-                                f"폰 MT5 에서 주문 시 SL/TP 를 꼭 같이 입력하세요. 시각 {last_bar}")
+                if args.heartbeat_hours > 0 and time.monotonic() - last_hb >= args.heartbeat_hours * 3600:
+                    last_hb = time.monotonic()
+                    _tell(_heartbeat(args, times, closes, r, ema(closes, args.ema_period)[-1]))
+                if times[-1] != last_bar:
+                    last_bar = times[-1]
+                    if virt:
+                        out = virtual_exit(virt["side"], virt["sl"], virt["tp"], highs[-1], lows[-1], r[-1])
+                        if out:
+                            reason, px = out
+                            _tell(f"[청산 알림] {args.symbol} {virt['side'].upper()} 정리 고려\n사유: {reason}"
+                                  + (f"\n기준가: {px}" if px else f"\n현재가(종가): {closes[-1]}"))
+                            virt = None
+                    else:
+                        sig = entry_signal(r[-2], r[-1], args.oversold, args.overbought)
+                        if sig:
+                            e = ema(closes, args.ema_period)[-1]
+                            if not args.no_trend_filter and not trend_ok(sig, closes[-1], e):
+                                print(f"{last_bar} 신호 {sig} 무시: 추세 불일치(종가 {closes[-1]} EMA {e:.2f})", flush=True)
+                            else:
+                                a = atr(highs, lows, closes, args.atr_period)[-1]
+                                sl_d = args.sl or args.sl_atr * a
+                                tp_d = args.tp or args.tp_atr * a
+                                sl, tp = sl_tp_prices(sig, closes[-1], sl_d, tp_d, digits)
+                                virt = {"side": sig, "sl": sl, "tp": tp}
+                                _tell(f"[진입 알림] {args.symbol} {'매수(BUY)' if sig == 'buy' else '매도(SELL)'}\n"
+                                      f"기준가(종가): {closes[-1]}  RSI {r[-1]:.1f}\n"
+                                      f"손절(SL): {sl}  익절(TP): {tp}  (ATR {a:.2f})\n"
+                                      f"폰 MT5 에서 주문 시 SL/TP 를 꼭 같이 입력하세요. 시각 {last_bar}")
+                errors = 0
+            except Exception as ex:  # 일시적 오류(연결 끊김 등)로 봇이 죽지 않게: 알리고 재시도
+                errors += 1
+                print(f"오류 {type(ex).__name__}: {ex}", flush=True)
+                if errors == 1 or errors % 60 == 0:
+                    _tell(f"[오류] 알림 봇에 문제가 생겼습니다(재시도 중, 연속 {errors}회): {type(ex).__name__}: {ex}")
+                time.sleep(30)
+                continue
             time.sleep(args.poll)
     except KeyboardInterrupt:
         print("중지")
@@ -127,41 +155,62 @@ def cmd_run(args):
     broker.connect(args.allow_live)
     sltp = (f"SL ${args.sl} TP ${args.tp} 고정" if args.sl and args.tp
             else f"SL ATR×{args.sl_atr} TP ATR×{args.tp_atr}")
-    print(f"시작: {args.symbol} M5, RSI({args.period}) {args.oversold}/{args.overbought}, "
+    _tell(f"자동매매 시작: {args.symbol} M5, RSI({args.period}) {args.oversold}/{args.overbought}, "
           f"추세필터 {'EMA'+str(args.ema_period) if not args.no_trend_filter else '끔'}, {sltp}, "
-          f"일일손실한도 {args.max_daily_loss_pct}%", flush=True)
-    last_bar = None
+          f"{args.lots}랏, 일일손실한도 {args.max_daily_loss_pct}%")
+    last_bar, errors, had_pos, we_closed = None, 0, False, False
     day, day_equity = date.today(), broker.equity()
+    last_hb = time.monotonic()
     try:
         while True:
-            if date.today() != day:
-                day, day_equity = date.today(), broker.equity()
-            times, highs, lows, closes = broker.get_rates(args.symbol, 600)
-            if times[-1] != last_bar:  # 새 봉이 확정됐을 때만 판단
-                last_bar = times[-1]
+            try:
+                if date.today() != day:
+                    day, day_equity = date.today(), broker.equity()
+                times, highs, lows, closes = broker.get_rates(args.symbol, 600)
                 r = rsi(closes, args.period)
                 pos = broker.positions(args.symbol)
-                if pos:
-                    p = pos[0]
-                    side = "buy" if p.type == 0 else "sell"
-                    if should_exit(side, r[-1]):
-                        broker.close_position(p)
-                        print(f"{last_bar} 청산({side}) RSI {r[-1]:.1f}", flush=True)
-                else:
-                    sig = entry_signal(r[-2], r[-1], args.oversold, args.overbought)
-                    if sig and daily_loss_hit(day_equity, broker.equity(), args.max_daily_loss_pct):
-                        print(f"{last_bar} 신호 {sig} 무시: 일일 손실 한도 도달(내일까지 정지)", flush=True)
-                    elif sig:
-                        e = ema(closes, args.ema_period)[-1]
-                        if not args.no_trend_filter and not trend_ok(sig, closes[-1], e):
-                            print(f"{last_bar} 신호 {sig} 무시: 추세 불일치(종가 {closes[-1]} EMA {e})", flush=True)
-                        else:
-                            a = atr(highs, lows, closes, args.atr_period)[-1]
-                            sl = args.sl or args.sl_atr * a
-                            tp = args.tp or args.tp_atr * a
-                            vol = args.lots or broker.calc_volume(args.symbol, sl, args.risk)
-                            res = broker.open_order(args.symbol, sig, vol, sl, tp)
-                            print(f"{last_bar} 진입 {sig} RSI {r[-1]:.1f} ATR {a:.2f} {res}", flush=True)
+                if had_pos and not pos and not we_closed:  # 우리가 청산하지 않았는데 사라짐 = SL/TP 체결
+                    _tell(f"[포지션 종료] {args.symbol} SL/TP 에 걸려 정리된 것으로 보입니다. 자산 {broker.equity():,.0f}")
+                had_pos, we_closed = bool(pos), False
+                if args.heartbeat_hours > 0 and time.monotonic() - last_hb >= args.heartbeat_hours * 3600:
+                    last_hb = time.monotonic()
+                    _tell(_heartbeat(args, times, closes, r, ema(closes, args.ema_period)[-1],
+                                     f" 보유 {len(pos)}건 자산 {broker.equity():,.0f}"))
+                if times[-1] != last_bar:  # 새 봉이 확정됐을 때만 판단
+                    last_bar = times[-1]
+                    if pos:
+                        p = pos[0]
+                        side = "buy" if p.type == 0 else "sell"
+                        if should_exit(side, r[-1]):
+                            broker.close_position(p)
+                            we_closed = True
+                            _tell(f"[청산] {args.symbol} {side} RSI {r[-1]:.1f} 중립선 되돌파로 청산 (시각 {last_bar})")
+                    else:
+                        sig = entry_signal(r[-2], r[-1], args.oversold, args.overbought)
+                        if sig and daily_loss_hit(day_equity, broker.equity(), args.max_daily_loss_pct):
+                            print(f"{last_bar} 신호 {sig} 무시: 일일 손실 한도 도달(내일까지 정지)", flush=True)
+                        elif sig:
+                            e = ema(closes, args.ema_period)[-1]
+                            if not args.no_trend_filter and not trend_ok(sig, closes[-1], e):
+                                print(f"{last_bar} 신호 {sig} 무시: 추세 불일치(종가 {closes[-1]} EMA {e:.2f})", flush=True)
+                            else:
+                                a = atr(highs, lows, closes, args.atr_period)[-1]
+                                sl = args.sl or args.sl_atr * a
+                                tp = args.tp or args.tp_atr * a
+                                vol = args.lots or broker.calc_volume(args.symbol, sl, args.risk)
+                                res = broker.open_order(args.symbol, sig, vol, sl, tp)
+                                had_pos = True
+                                _tell(f"[진입] {args.symbol} {'매수' if sig == 'buy' else '매도'} {vol}랏 RSI {r[-1]:.1f}\n"
+                                      f"체결 {res['filled']} (요청 {res['requested']}, 슬리피지 {res['slippage_points']:.0f}포인트)\n"
+                                      f"SL {res['sl']}  TP {res['tp']}  (ATR {a:.2f})  시각 {last_bar}")
+                errors = 0
+            except Exception as ex:  # 일시적 오류(연결 끊김 등)로 봇이 죽지 않게: 알리고 재시도
+                errors += 1
+                print(f"오류 {type(ex).__name__}: {ex}", flush=True)
+                if errors == 1 or errors % 60 == 0:
+                    _tell(f"[오류] 자동매매 봇에 문제가 생겼습니다(재시도 중, 연속 {errors}회): {type(ex).__name__}: {ex}")
+                time.sleep(30)
+                continue
             time.sleep(args.poll)
     except KeyboardInterrupt:
         print("중지")
@@ -189,6 +238,8 @@ def main():
     ap.add_argument("--lots", type=float, default=0.01, help="랏 고정(0이면 --risk 로 계산)")
     ap.add_argument("--bars", type=int, default=30000, help="백테스트에 쓸 5분봉 개수")
     ap.add_argument("--spread", type=float, default=0.3, help="백테스트 거래당 비용(가격 단위, 스프레드+슬리피지)")
+    ap.add_argument("--heartbeat-hours", type=float, default=6,
+                    help="이 시간마다 텔레그램으로 정상 작동 메시지 전송(0=끔). 이 메시지가 끊기면 봇이 멈춘 것")
     ap.add_argument("--poll", type=int, default=5, help="폴링 간격(초)")
     ap.add_argument("--allow-live", action="store_true", help="실계좌 허용(기본 거부)")
     args = ap.parse_args()
