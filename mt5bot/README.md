@@ -31,3 +31,8 @@ python -m mt5bot alert --symbol GOLD
 ```
 python -m mt5bot backtest --symbol GOLD --bars 30000 --spread 0.3
 ```
+
+## 간편 실행 (Windows)
+- `start_check.bat` 더블클릭: 연결/계좌/지표 확인 (주문 없음)
+- `start_run.bat` 더블클릭: 자동매매 (기본값: GOLD, 0.01랏, EMA200 필터, SL ATR×2.0 / TP ATR×3.0)
+- `start_alert.bat` 더블클릭: 텔레그램 알림만 (주문 없음). 같은 폴더에 `telegram.txt` 를 만들어 첫 줄=봇 토큰, 둘째 줄=chat id 를 적어 둔다(저장소에는 올라가지 않음).

@@ -105,3 +105,15 @@ def test_grid_runs_on_random_walk():
     l = [x - 0.5 for x in c]
     rows = backtest.run_grid(h, l, c, 0.3)
     assert len(rows) == 45 and all(r["all"]["n"] >= 0 for r in rows)
+
+
+def test_telegram_file_config(tmp_path, monkeypatch):
+    from mt5bot import notify
+    f = tmp_path / "telegram.txt"
+    f.write_text("123:ABC\n999\n", encoding="utf-8")
+    monkeypatch.setattr(notify, "CONFIG_FILE", f)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    assert notify._config() == ("123:ABC", "999")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "555")
+    assert notify._config() == ("123:ABC", "555")

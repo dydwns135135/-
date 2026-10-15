@@ -2,14 +2,29 @@
 토큰은 어떤 경우에도 출력하지 않는다."""
 import json
 import os
+from pathlib import Path
 import urllib.parse
 import urllib.request
 
 
-def _call(method, **params):
+CONFIG_FILE = Path(__file__).resolve().parent.parent / "telegram.txt"
+
+
+def _config():
+    """(토큰, chat id). 환경변수가 우선이고, 없으면 telegram.txt 의 첫 줄=토큰, 둘째 줄=chat id."""
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    chat = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    if (not token or not chat) and CONFIG_FILE.exists():
+        lines = [x.strip() for x in CONFIG_FILE.read_text(encoding="utf-8-sig").splitlines() if x.strip()]
+        token = token or (lines[0] if lines else "")
+        chat = chat or (lines[1] if len(lines) > 1 else "")
+    return token, chat
+
+
+def _call(method, **params):
+    token, _ = _config()
     if not token:
-        return {"ok": False, "description": "TELEGRAM_BOT_TOKEN 이 설정되지 않았습니다"}
+        return {"ok": False, "description": "토큰이 설정되지 않았습니다 (telegram.txt 첫 줄 또는 TELEGRAM_BOT_TOKEN)"}
     url = f"https://api.telegram.org/bot{token}/{method}"
     try:
         data = urllib.parse.urlencode(params).encode()
@@ -21,9 +36,9 @@ def _call(method, **params):
 
 def send(text):
     """알림 전송. 실패해도 예외를 내지 않고 결과(dict)를 돌려준다."""
-    chat = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    _, chat = _config()
     if not chat:
-        return {"ok": False, "description": "TELEGRAM_CHAT_ID 가 설정되지 않았습니다"}
+        return {"ok": False, "description": "chat id 가 설정되지 않았습니다 (telegram.txt 둘째 줄 또는 TELEGRAM_CHAT_ID)"}
     return _call("sendMessage", chat_id=chat, text=text[:4000])
 
 
