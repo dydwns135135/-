@@ -68,3 +68,40 @@ def test_virtual_exit():
     assert virtual_exit("sell", 105, 90, 101, 89, 60)[0].startswith("익절")
     assert virtual_exit("buy", 95, 110, 100, 99, 55)[0].startswith("RSI")
     assert virtual_exit("buy", 95, 110, 100, 99, 45) is None
+
+
+import random
+
+from mt5bot import backtest
+
+
+def test_simulate_tp_sl_and_cost():
+    # 봉0 종가 100 에서 매수, ATR=2, SL=1.0*2→98, TP=2.0*2→104. 봉1 고가 105 → TP, 비용 0.5 차감
+    h, l, c = [100, 105], [100, 99], [100, 101]
+    t = backtest.simulate(h, l, c, ["buy", None], [2.0, 2.0], 1.0, 2.0, 0.5)
+    assert len(t) == 1 and abs(t[0]["pnl"] - 3.5) < 1e-9
+    # 같은 봉에 SL/TP 동시 도달 → SL 우선
+    h, l, c = [100, 105], [100, 97], [100, 101]
+    t = backtest.simulate(h, l, c, ["buy", None], [2.0, 2.0], 1.0, 2.0, 0.0)
+    assert abs(t[0]["pnl"] - (-2.0)) < 1e-9
+    # 숏
+    h, l, c = [100, 101], [100, 95], [100, 99]
+    t = backtest.simulate(h, l, c, ["sell", None], [2.0, 2.0], 1.0, 2.0, 0.0)
+    assert abs(t[0]["pnl"] - 4.0) < 1e-9
+
+
+def test_stats():
+    s = backtest.stats([{"i": 0, "pnl": 3}, {"i": 1, "pnl": -1}, {"i": 2, "pnl": -1}])
+    assert s["n"] == 3 and abs(s["win"] - 100 / 3) < 1e-9 and s["total"] == 1 and s["pf"] == 1.5 and s["maxdd"] == 2
+
+
+def test_grid_runs_on_random_walk():
+    random.seed(1)
+    c, p = [], 2000.0
+    for _ in range(3000):
+        p += random.gauss(0, 1.0)
+        c.append(p)
+    h = [x + 0.5 for x in c]
+    l = [x - 0.5 for x in c]
+    rows = backtest.run_grid(h, l, c, 0.3)
+    assert len(rows) == 45 and all(r["all"]["n"] >= 0 for r in rows)

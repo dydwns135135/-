@@ -25,3 +25,9 @@ python -m mt5bot telegram-test          # chat id 확인 + 테스트 알림 (봇
 set TELEGRAM_CHAT_ID=위에서 나온 private 숫자
 python -m mt5bot alert --symbol GOLD
 ```
+
+## 백테스트
+과거 GOLD 5분봉으로 전략(RSI 역추세, EMA200 필터, 돌파 채널, EMA 눌림목) × SL/TP 배수를 비교한다. 비용(스프레드)을 빼고, 앞 70% 학습 / 뒤 30% 검증 구간으로 나눠 과최적화를 점검한다.
+```
+python -m mt5bot backtest --symbol GOLD --bars 30000 --spread 0.3
+```

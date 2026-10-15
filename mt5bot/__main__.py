@@ -1,9 +1,9 @@
-"""사용: python -m mt5bot check | run | test-order | alert | telegram-test  (옵션은 --help)"""
+"""사용: python -m mt5bot check | run | test-order | alert | telegram-test | backtest  (옵션은 --help)"""
 import argparse
 import time
 from datetime import date
 
-from . import broker, notify
+from . import backtest, broker, notify
 from .indicators import atr, ema, rsi
 from .strategy import daily_loss_hit, entry_signal, should_exit, sl_tp_prices, trend_ok, virtual_exit
 
@@ -37,6 +37,29 @@ def cmd_test_order(args):
         print(f"청산 성공: 체결가 {r.price}", flush=True)
     finally:
         broker.shutdown()
+
+
+def cmd_backtest(args):
+    broker.connect(True)  # 조회만
+    times, highs, lows, closes = broker.get_history(args.symbol, args.bars)
+    broker.shutdown()
+    days = (times[-1] - times[0]).days
+    print(f"데이터: {args.symbol} M5 {len(closes)}봉 ({times[0]:%Y-%m-%d} ~ {times[-1]:%Y-%m-%d}, 약 {days}일), "
+          f"거래당 비용 {args.spread} (가격 단위)", flush=True)
+    rows = backtest.run_grid(highs, lows, closes, args.spread)
+    # 검증 구간(뒤 30%) 총손익 기준 정렬: 과거에 끼워 맞춘 설정이 위로 오는 걸 줄이기 위함
+    rows = [r for r in rows if r["in"]["n"] >= 10 and r["out"]["n"] >= 5]
+    rows.sort(key=lambda r: r["out"]["total"], reverse=True)
+    print("\n상위 10개 (정렬: 검증구간 총손익). 손익 단위는 가격 단위=달러(0.01랏 약 1온스당)")
+    print(f"{'전략':<22}{'SL':>4}{'TP':>5} | {'전체: 거래 승률 총손익 PF 최대낙폭':<34} | {'학습 총손익':>9} {'검증 총손익':>9}")
+    for r in rows[:10]:
+        a = r["all"]
+        print(f"{r['name']:<22}{r['sl']:>4}{r['tp']:>5} | {a['n']:>5} {a['win']:>5.1f}% {a['total']:>9.1f} {a['pf']:>4.2f} {a['maxdd']:>8.1f} | "
+              f"{r['in']['total']:>9.1f} {r['out']['total']:>9.1f}")
+    pos_both = [r for r in rows if r["in"]["total"] > 0 and r["out"]["total"] > 0]
+    print(f"\n학습·검증 구간 모두 흑자인 조합: {len(pos_both)}개 / 전체 {len(rows)}개")
+    if not pos_both:
+        print("-> 비용을 빼면 두 구간 모두에서 이기는 설정이 없습니다. 이 전략들은 실거래에 쓰지 않는 게 맞습니다.")
 
 
 def cmd_telegram_test(args):
@@ -148,7 +171,7 @@ def cmd_run(args):
 
 def main():
     ap = argparse.ArgumentParser(prog="mt5bot")
-    ap.add_argument("command", choices=["check", "run", "test-order", "alert", "telegram-test"])
+    ap.add_argument("command", choices=["check", "run", "test-order", "alert", "telegram-test", "backtest"])
     ap.add_argument("--symbol", default="XAUUSD")
     ap.add_argument("--period", type=int, default=14, help="RSI 기간")
     ap.add_argument("--oversold", type=float, default=30)
@@ -164,13 +187,16 @@ def main():
                     help="하루 시작 자산 대비 손실 %% 도달 시 그날 신규 진입 중지(0=끔, 봇 재시작 시 기준 초기화)")
     ap.add_argument("--risk", type=float, default=10.0, help="거래당 최대 손실 금액(계좌 통화)")
     ap.add_argument("--lots", type=float, default=0, help="랏 고정(0이면 --risk 로 계산)")
+    ap.add_argument("--bars", type=int, default=30000, help="백테스트에 쓸 5분봉 개수")
+    ap.add_argument("--spread", type=float, default=0.3, help="백테스트 거래당 비용(가격 단위, 스프레드+슬리피지)")
     ap.add_argument("--poll", type=int, default=5, help="폴링 간격(초)")
     ap.add_argument("--allow-live", action="store_true", help="실계좌 허용(기본 거부)")
     args = ap.parse_args()
     if bool(args.sl) != bool(args.tp):
         ap.error("--sl 과 --tp 는 함께 지정하세요(또는 둘 다 생략하고 ATR 사용)")
     {"check": cmd_check, "run": cmd_run, "test-order": cmd_test_order,
-     "alert": cmd_alert, "telegram-test": cmd_telegram_test}[args.command](args)
+     "alert": cmd_alert, "telegram-test": cmd_telegram_test,
+     "backtest": cmd_backtest}[args.command](args)
 
 
 if __name__ == "__main__":

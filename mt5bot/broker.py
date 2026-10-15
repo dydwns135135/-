@@ -67,6 +67,23 @@ def get_rates(symbol, count=600):
             [float(r["close"]) for r in rates])
 
 
+def get_history(symbol, count=30000):
+    """백테스트용 과거 5분봉(확정봉). 요청 개수를 못 받으면 절반씩 줄여 재시도. (시각, 고, 저, 종) 리스트."""
+    mt5 = _mt5()
+    if not mt5.symbol_select(symbol, True):
+        raise RuntimeError(f"심볼 선택 실패 {symbol}: {mt5.last_error()}")
+    n = count
+    while n >= 1000:
+        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, n + 1)
+        if rates is not None and len(rates) > 1000:
+            rates = rates[:-1]
+            return ([datetime.fromtimestamp(int(r["time"])) for r in rates],
+                    [float(r["high"]) for r in rates], [float(r["low"]) for r in rates],
+                    [float(r["close"]) for r in rates])
+        n //= 2
+    raise RuntimeError(f"과거 데이터 수집 실패: {mt5.last_error()} (MT5 에서 GOLD 5분 차트를 열어 과거 데이터를 받은 뒤 다시 시도)")
+
+
 def equity():
     return _mt5().account_info().equity
 
