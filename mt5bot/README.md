@@ -38,4 +38,4 @@ python -m mt5bot backtest --symbol GOLD --bars 30000 --spread 0.3
 - `start_alert.bat` 더블클릭: 텔레그램 알림만 (주문 없음). 같은 폴더에 `telegram.txt` 를 만들어 첫 줄=봇 토큰, 둘째 줄=chat id 를 적어 둔다(저장소에는 올라가지 않음).
 
 ## 텔레그램 알림 (자동매매 `run`)
-`telegram.txt` 가 있으면 `run` 도 진입/청산/SL·TP 종료/오류와 6시간마다 "정상 작동 중" 메시지를 텔레그램으로 보낸다. 정상 작동 메시지가 끊기면 PC 나 봇이 멈춘 것이다(`--heartbeat-hours` 로 조정, 0 이면 끔).
+`telegram.txt` 가 있으면 `run` 도 진입/청산/SL·TP 종료/오류와 1시간마다 "정상 작동 중" 메시지를 텔레그램으로 보낸다. 정상 작동 메시지가 끊기면 PC 나 봇이 멈춘 것이다(`--heartbeat-hours` 로 조정, 0 이면 끔).

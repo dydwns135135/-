@@ -238,7 +238,7 @@ def main():
     ap.add_argument("--lots", type=float, default=0.01, help="랏 고정(0이면 --risk 로 계산)")
     ap.add_argument("--bars", type=int, default=30000, help="백테스트에 쓸 5분봉 개수")
     ap.add_argument("--spread", type=float, default=0.3, help="백테스트 거래당 비용(가격 단위, 스프레드+슬리피지)")
-    ap.add_argument("--heartbeat-hours", type=float, default=6,
+    ap.add_argument("--heartbeat-hours", type=float, default=1,
                     help="이 시간마다 텔레그램으로 정상 작동 메시지 전송(0=끔). 이 메시지가 끊기면 봇이 멈춘 것")
     ap.add_argument("--poll", type=int, default=5, help="폴링 간격(초)")
     ap.add_argument("--allow-live", action="store_true", help="실계좌 허용(기본 거부)")
