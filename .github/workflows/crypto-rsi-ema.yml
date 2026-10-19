@@ -1,6 +1,6 @@
 name: crypto-rsi-ema (RSI반전+EMA200필터 전략 백테스트)
 
-# 공개 시세만 사용(API 키·주문 없음). TradingView 전략 규칙 그대로 Bitget 1시간·4시간봉으로 백테스트한다.
+# 공개 시세만 사용(API 키·주문 없음). TradingView 전략 규칙 그대로 6개 코인 × 1·2·4·8시간·일봉으로 백테스트한다.
 on:
   workflow_dispatch:
     inputs:
@@ -11,7 +11,7 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

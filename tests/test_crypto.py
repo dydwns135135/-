@@ -1711,3 +1711,49 @@ def test_rsi_ema_stop_before_target_and_costs():
     s = re_.stats(tr, 1.0)
     assert s["거래수"] == len(tr) and "손절/익절/RSI" in s
     assert "승률" in re_.fmt({"T": s}) and re_.stats(tr.iloc[0:0])["거래수"] == 0
+
+
+def test_rsi_ema_resample_and_exit_check():
+    from crypto import rsi_ema as re_
+    h = _rsi_df(np.arange(1, 50, dtype=float))                      # 49개 1시간봉
+    four = re_.resample(h, 4)
+    assert len(four) == 12                                           # 4시간 묶음 12개 + 덜 찬 마지막 1개는 버림
+    first = four.iloc[0]
+    assert first["open"] == h["open"].iloc[0] and first["close"] == h["close"].iloc[3] and first["high"] == h["high"].iloc[:4].max()
+    assert re_.resample(h, 1) is h
+    d = pd.DataFrame({"open": [100, 100, 100], "high": [101, 106, 101], "low": [99, 99, 94], "close": [100, 100, 100],
+                      "rsi": [45, 45, 45]})
+    assert re_.exit_check(1, 95, 105, d) == ("익절", 105)            # 두 번째 봉에서 익절
+    assert re_.exit_check(-1, 105, 95, d.assign(rsi=[55, 55, 55])) == ("손절", 105)   # 숏은 고가 106에서 손절
+    assert re_.exit_check(-1, 105, 95, d) == ("RSI50 청산", 100)     # 숏은 RSI ≤ 50 이면 첫 봉에서 정리
+    assert re_.exit_check(1, 90, 110, d.assign(rsi=[45, 55, 45])) == ("RSI50 청산", 100)
+    assert re_.exit_check(1, 90, 110, d) is None
+
+
+def test_scalp_bot_rsi_strategy_entry_stop_and_rsi_exit():
+    from crypto import scalp_bot as sb
+    from crypto import rsi_ema as re_
+    base = list(np.linspace(100, 200, 260))
+    dip = [200 - 1.5 * k for k in range(1, 9)]
+    up = [dip[-1] + 2.0 * k for k in range(1, 25)]
+    full = _rsi_df(base + dip + up)
+    sig = re_.signals(re_.indicators(full))
+    i = int(np.flatnonzero(sig.to_numpy() == 1)[0])
+    bars = full.iloc[:i + 1]
+    now = bars.index[-1] + pd.Timedelta(hours=1, minutes=10)
+    b = _ScalpBroker(float(bars["close"].iloc[-1]))
+    st = {}
+    msgs = sb.run_once_rsi(b, bars, st, now, 1000.0, risk=0.01, leverage=10, tf_hours=1)
+    kind, side, qty, stop, lev = b.calls[0]
+    assert kind == "open" and side == "buy" and stop < b.px and "RSI" in msgs[0] and st["entries"] == 1
+    assert abs(qty * (b.px - stop) - 10.0) < 0.5 or qty * b.px >= 10000 - 1e-6
+    # 이후 반등으로 RSI ≥ 50 → 봇이 정리하고 결과 기록
+    msgs2 = sb.run_once_rsi(b, full, st, full.index[-1] + pd.Timedelta(hours=1, minutes=5), 1000.0, tf_hours=1)
+    assert b.pos is None and st["open"] is None and st["done"][-1]["status"] in ("RSI50 청산", "익절") and "정리" in msgs2[0]
+    # 거래소 손절로 이미 정리된 경우
+    b3 = _ScalpBroker(float(bars["close"].iloc[-1]))
+    st3 = {}
+    sb.run_once_rsi(b3, bars, st3, now, 1000.0, tf_hours=1)
+    b3.pos = None
+    m3 = sb.run_once_rsi(b3, bars, st3, now, 1000.0, tf_hours=1)
+    assert st3["done"][-1]["net_r"] < -1.0 and "손절" in m3[0]
