@@ -1757,3 +1757,29 @@ def test_scalp_bot_rsi_strategy_entry_stop_and_rsi_exit():
     b3.pos = None
     m3 = sb.run_once_rsi(b3, bars, st3, now, 1000.0, tf_hours=1)
     assert st3["done"][-1]["net_r"] < -1.0 and "손절" in m3[0]
+
+
+def test_scalp_bot_rsi_multi_shares_daily_cap_and_max_open():
+    from crypto import scalp_bot as sb
+    from crypto import rsi_ema as re_
+    base = list(np.linspace(100, 200, 260))
+    dip = [200 - 1.5 * k for k in range(1, 9)]
+    up = [dip[-1] + 2.0 * k for k in range(1, 25)]
+    full = _rsi_df(base + dip + up)
+    i = int(np.flatnonzero(re_.signals(re_.indicators(full)).to_numpy() == 1)[0])
+    bars = full.iloc[:i + 1]
+    now = bars.index[-1] + pd.Timedelta(hours=1, minutes=10)
+    syms = [f"C{k}/USDT:USDT" for k in range(5)]
+    brokers = {s: _ScalpBroker(float(bars["close"].iloc[-1])) for s in syms}
+    st = {}
+    msgs = sb.run_rsi_multi(brokers, {s: bars for s in syms}, st, now, 1000.0, tf_hours=1)
+    opened = [s for s in syms if brokers[s].calls and brokers[s].calls[0][0] == "open"]
+    assert len(opened) == sb.MAX_PER_DAY == 3                      # 하루 3번(동시 보유 3개)까지만 진입
+    assert st["rsi_multi"]["entries"] == 3 and any("[C0]" in m for m in msgs)
+    assert any("3번" in m or "보유 중" in m for m in msgs)
+    # 한 코인 브로커가 오류를 내도 나머지는 진행
+    class Bad(_ScalpBroker):
+        def position(self): raise RuntimeError("boom")
+    b2 = {"X/USDT:USDT": Bad(1.0), "Y/USDT:USDT": _ScalpBroker(float(bars["close"].iloc[-1]))}
+    m2 = sb.run_rsi_multi(b2, {k: bars for k in b2}, {}, now, 1000.0, tf_hours=1)
+    assert any("[X] ⚠️ 오류" in m for m in m2) and b2["Y/USDT:USDT"].calls[0][0] == "open"
