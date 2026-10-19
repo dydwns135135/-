@@ -1673,3 +1673,41 @@ def test_run_once_mix_ls_long_above_cloud_short_below_and_flip():
     notes = run_once_mix_ls(flip, 1.0, max_notional=70, leverage=5)
     assert flip.calls[0] == ("close", "long", 0.5) and flip.calls[1][:2] == ("open", "sell")
     assert any("숏" in n for n in notes[1:])
+
+
+def _rsi_df(closes):
+    idx = pd.date_range("2024-01-01", periods=len(closes), freq="1h", tz="UTC")
+    c = np.asarray(closes, float)
+    o = np.r_[c[0], c[:-1]]
+    return pd.DataFrame({"open": o, "high": np.maximum(o, c) + 0.05, "low": np.minimum(o, c) - 0.05, "close": c}, index=idx)
+
+
+def test_rsi_ema_long_signal_needs_cross_and_ema_and_exits():
+    from crypto import rsi_ema as re_
+    base = list(np.linspace(100, 200, 260))                         # 장기 상승 → 종가 > EMA200
+    dip = [200 - 1.5 * k for k in range(1, 9)]                       # 급락 → RSI 30 아래
+    bounce = [dip[-1] + 2.0 * k for k in range(1, 25)]               # 반등 → RSI 30 위로 돌파, 이후 50 이상
+    df = _rsi_df(base + dip + bounce)
+    d = re_.indicators(df)
+    sig = re_.signals(d)
+    assert (sig == 1).any() and not (sig == -1).any()
+    i = int(np.flatnonzero(sig.to_numpy() == 1)[0])
+    assert d["rsi"].iloc[i - 1] <= 30 < d["rsi"].iloc[i] and d["close"].iloc[i] > d["ema"].iloc[i]
+    tr = re_.backtest(df, "T")
+    assert len(tr) >= 1 and tr.iloc[0]["side"] == 1 and tr.iloc[0]["why"] in ("익절", "RSI50 청산", "손절")
+    first = tr.iloc[0]
+    assert first["time"] == df.index[i] and first["exit"] > first["time"]   # 신호 봉 다음부터 보유
+    assert (tr["time"].iloc[1:].to_numpy() >= tr["exit"].iloc[:-1].to_numpy()).all()   # 포지션 1개
+
+
+def test_rsi_ema_stop_before_target_and_costs():
+    from crypto import rsi_ema as re_
+    base = list(np.linspace(100, 200, 260))
+    dip = [200 - 1.5 * k for k in range(1, 9)]
+    crash = [dip[-1] + 1.0] + [dip[-1] - 6.0 * k for k in range(1, 10)]   # 반등 신호 직후 급락 → 손절
+    df = _rsi_df(base + dip + crash)
+    tr = re_.backtest(df, "T")
+    assert len(tr) >= 1 and tr.iloc[0]["why"] == "손절" and tr.iloc[0]["ret"] < -2 * re_.COST
+    s = re_.stats(tr, 1.0)
+    assert s["거래수"] == len(tr) and "손절/익절/RSI" in s
+    assert "승률" in re_.fmt({"T": s}) and re_.stats(tr.iloc[0:0])["거래수"] == 0
