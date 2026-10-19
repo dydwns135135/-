@@ -45,7 +45,8 @@ jobs:
           LEVERAGE: ${{ vars.SCALP_LEVERAGE || '3' }}   # 거래소 레버리지(1~20). 손절 전에 청산되면 자동으로 낮춤
           RISK: ${{ vars.SCALP_RISK || '0.01' }}        # 손절 1번에 잃을 기준금액 비율(최대 0.05). 포지션 크기를 정함
           STRATEGY: ${{ vars.SCALP_STRATEGY || 'breakout' }}   # breakout(1시간봉 돌파) / rsi_ema(4시간봉 RSI반전+EMA200)
+          SYMBOLS: ${{ vars.SCALP_SYMBOLS || 'ETH,SOL,XRP,DOGE,BNB' }}   # rsi_ema 에서 볼 코인(BTC 는 섞기 봇 몫이라 제외 권장)
         run: |
           if [ "${{ github.event_name }}" = "schedule" ] && [ "$ENABLED" != "true" ]; then echo "SCALP_ENABLED!=true, 건너뜀"; exit 0; fi
           case "$STRATEGY" in breakout|rsi_ema) ;; *) echo "SCALP_STRATEGY=$STRATEGY 는 breakout 또는 rsi_ema 만 가능"; exit 1;; esac
-          python -m crypto.scalp_bot --budget "$BUDGET" --leverage "$LEVERAGE" --risk "$RISK" --strategy "$STRATEGY"
+          python -m crypto.scalp_bot --budget "$BUDGET" --leverage "$LEVERAGE" --risk "$RISK" --strategy "$STRATEGY" --symbols "$SYMBOLS"

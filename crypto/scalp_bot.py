@@ -1,4 +1,6 @@
-"""데모 전용 단타 봇: Bitget 데모 계좌에서 ETH 1시간봉 돌파 신호(롱·숏)로 자동매매한다. 실거래 옵션 없음.
+"""데모 전용 단타 봇: Bitget 데모 계좌에서 자동매매한다. 실거래 옵션 없음.
+--strategy rsi_ema: ETH·SOL·XRP·DOGE·BNB 4시간봉 RSI반전+EMA200(사용자 제공 Pine). 코인당 1개, 동시 최대 3개, 하루 3번 진입.
+--strategy breakout(기본): ETH 1시간봉 돌파 신호(롱·숏), 아래 설명.
 python -m crypto.scalp_bot [--budget 1000]   (매시간 실행)
 
 신호·손절·목표는 crypto.futures_signal 과 같다(백테스트: 비용 후 신호당 평균 -0.09R → 손실 가능성이 큰 규칙).
@@ -125,8 +127,13 @@ def run_once(broker, bars: pd.DataFrame, state: dict, now: pd.Timestamp, budget:
     return msgs
 
 
+RSI_SYMBOLS = ("ETH/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT", "DOGE/USDT:USDT", "BNB/USDT:USDT")  # BTC 는 섞기 봇 몫
+MAX_OPEN = 3      # 동시에 들고 있을 수 있는 코인 수(코인당 포지션 1개)
+
+
 def run_once_rsi(broker, bars: pd.DataFrame, state: dict, now: pd.Timestamp, budget: float,
-                 risk: float = fs.RISK, leverage: int = int(fs.LEV_CAP), tf_hours: int = 4) -> list[str]:
+                 risk: float = fs.RISK, leverage: int = int(fs.LEV_CAP), tf_hours: int = 4,
+                 symbol: str = SYMBOL, can_enter: bool = True) -> list[str]:
     """RSI반전+EMA200 전략(사용자 제공 Pine). bars: 마감된 N시간봉. 손절은 거래소 주문, 익절·RSI50 청산은 봇이 시장가로."""
     from . import rsi_ema
     msgs: list[str] = []
@@ -150,7 +157,7 @@ def run_once_rsi(broker, bars: pd.DataFrame, state: dict, now: pd.Timestamp, bud
         pos = broker.position()
     if state.get("open") or pos is not None:
         if pos is not None and not state.get("open"):
-            msgs.append(f"⚠️ 봇이 모르는 {SYMBOL} 포지션이 있어 새로 진입하지 않음(앱에서 직접 연 포지션?)")
+            msgs.append(f"⚠️ 봇이 모르는 {symbol} 포지션이 있어 새로 진입하지 않음(앱에서 직접 연 포지션?)")
         return msgs
     last = d.index[-1]
     if now - (last + pd.Timedelta(hours=tf_hours)) > pd.Timedelta(hours=3):
@@ -160,6 +167,9 @@ def run_once_rsi(broker, bars: pd.DataFrame, state: dict, now: pd.Timestamp, bud
         return msgs
     if state.get("entries", 0) >= MAX_PER_DAY:
         return msgs + [f"⏸ 오늘 진입 {MAX_PER_DAY}번을 다 써서 이번 신호({'롱' if sig > 0 else '숏'})는 건너뜀"]
+    if not can_enter:
+        state["last_signal_bar"] = last.isoformat()
+        return msgs + [f"⏸ 이미 {MAX_OPEN}개 코인을 보유 중이라 이번 신호({'롱' if sig > 0 else '숏'})는 건너뜀"]
     c, atr = float(d["close"].iloc[-1]), float(d["atr"].iloc[-1])
     stop, tp = c - sig * rsi_ema.SL_MULT * atr, c + sig * rsi_ema.TP_MULT * atr
     px = float(broker.price())
@@ -174,10 +184,38 @@ def run_once_rsi(broker, bars: pd.DataFrame, state: dict, now: pd.Timestamp, bud
     state["entries"] = state.get("entries", 0) + 1
     state["last_signal_bar"] = last.isoformat()
     lev_note = "" if lev == leverage else f" · 요청 {leverage}배는 청산가가 손절가보다 가까워 {lev}배로 낮춤"
-    msgs.append(f"{'📈 롱' if sig > 0 else '📉 숏'} 진입 {qty:.4f} ETH @ ~{fs.fmt_price(px)} "
+    msgs.append(f"{'📈 롱' if sig > 0 else '📉 숏'} 진입 {qty:.4f} {symbol.split('/')[0]} @ ~{fs.fmt_price(px)} "
                 f"(RSI {d['rsi'].iloc[-1]:.0f}, EMA200 {fs.fmt_price(float(d['ema'].iloc[-1]))}, 명목 {notional:,.0f} USDT, 레버리지 {lev}배{lev_note})\n"
                 f"손절 {fs.fmt_price(stop)} (거래소 주문) · 익절 {fs.fmt_price(tp)} · RSI 50 도달 시 정리\n"
                 f"손절 시 손실 ≈ {notional * stop_pct:,.0f} USDT (기준금액의 {notional * stop_pct / budget:.1%}) · 오늘 진입 {state['entries']}/{MAX_PER_DAY}")
+    return msgs
+
+
+def run_rsi_multi(brokers: dict, bars: dict, state: dict, now: pd.Timestamp, budget: float,
+                  risk: float = fs.RISK, leverage: int = int(fs.LEV_CAP), tf_hours: int = 4) -> list[str]:
+    """여러 코인에 RSI반전 전략. 코인당 포지션 1개, 동시 보유 최대 MAX_OPEN 개, 진입은 전체 합쳐 하루 MAX_PER_DAY 번.
+    상태: state['rsi_multi'] = {day, entries, done(공통 성적표), coins: {심볼: {open, last_signal_bar}}}."""
+    rs = state.setdefault("rsi_multi", {"coins": {}, "done": []})
+    today = kst_day(now)
+    if rs.get("day") != today:
+        rs["day"], rs["entries"] = today, 0
+    msgs: list[str] = []
+    for sym in brokers:
+        if sym not in bars or bars[sym] is None or len(bars[sym]) < 210:
+            continue
+        cs = rs["coins"].setdefault(sym, {})
+        n_open = sum(1 for k, v in rs["coins"].items() if k != sym and v.get("open"))
+        cs.update(day=rs["day"], entries=rs.get("entries", 0), done=rs["done"])
+        try:
+            out = run_once_rsi(brokers[sym], bars[sym], cs, now, budget, risk, leverage, tf_hours,
+                               symbol=sym, can_enter=n_open < MAX_OPEN)
+        except Exception as e:      # 한 코인 오류가 나머지 코인 관리를 막지 않게
+            out = [f"⚠️ 오류로 이번 회차 건너뜀: {type(e).__name__}: {str(e)[:150]}"]
+        rs["entries"] = cs.pop("entries")
+        cs.pop("day", None)
+        cs.pop("done", None)
+        coin = sym.split("/")[0]
+        msgs += [f"[{coin}] {m}" for m in out]
     return msgs
 
 
@@ -191,6 +229,8 @@ def main() -> None:
     ap.add_argument("--state", default="scalp_state.json")
     ap.add_argument("--leverage", type=int, default=int(fs.LEV_CAP), help=f"거래소 레버리지(1~{MAX_LEVERAGE})")
     ap.add_argument("--risk", type=float, default=fs.RISK, help=f"손절 1번에 잃을 기준금액 비율(0~{MAX_RISK})")
+    ap.add_argument("--symbols", default=",".join(x.split("/")[0] for x in RSI_SYMBOLS),
+                    help="rsi_ema 전략에서 볼 코인(쉼표 구분, BTC 제외 권장)")
     ap.add_argument("--strategy", choices=("breakout", "rsi_ema"), default="breakout",
                     help="breakout: 1시간봉 돌파(기존) / rsi_ema: 4시간봉 RSI반전+EMA200(사용자 제공 Pine)")
     a = ap.parse_args()
@@ -201,21 +241,29 @@ def main() -> None:
     state = load_state(a.state)
     try:
         public = ccxt.bitget({"enableRateLimit": True, "options": {"defaultType": "swap"}})
-        broker = BitgetFutures.from_env(SYMBOL, 1, demo=True)   # 데모 전용
         now = pd.Timestamp.now(tz="UTC")
         if a.strategy == "rsi_ema":
-            bars = fetch_history(public, SYMBOL, timeframe="4h", years=0.2)
-            msgs = run_once_rsi(broker, bars, state, now, a.budget, a.risk, a.leverage, tf_hours=4)
+            syms = [f"{c.strip().upper()}/USDT:USDT" for c in a.symbols.split(",") if c.strip()]
+            brokers, bars = {}, {}
+            for sym in syms:
+                try:
+                    brokers[sym] = BitgetFutures.from_env(sym, 1, demo=True)   # 데모 전용
+                    bars[sym] = fetch_history(public, sym, timeframe="4h", years=0.2)
+                except Exception as e:
+                    notify.send(f"⚠️ 단타봇 {sym.split('/')[0]} 준비 실패(이번 회차 제외): {type(e).__name__}: {str(e)[:150]}")
+                    brokers.pop(sym, None)
+            msgs = run_rsi_multi(brokers, bars, state, now, a.budget, a.risk, a.leverage, tf_hours=4)
         else:
+            broker = BitgetFutures.from_env(SYMBOL, 1, demo=True)   # 데모 전용
             bars = fetch_history(public, SYMBOL, timeframe="1h", years=0.05, keep_volume=True)
             msgs = run_once(broker, bars, state, now, a.budget, a.risk, a.leverage)
     except Exception as e:
-        notify.send(f"❌ 단타봇 오류 [데모/ETH]: {type(e).__name__}: {str(e)[:300]}")
+        notify.send(f"❌ 단타봇 오류 [데모/{a.strategy}]: {type(e).__name__}: {str(e)[:300]}")
         raise
     finally:
         save_state(a.state, state)
     for m in msgs:
-        notify.send(f"⚡ 단타봇 [데모/ETH {'4시간봉 RSI반전' if a.strategy == 'rsi_ema' else '1시간봉 돌파'}]\n{m}")
+        notify.send(f"⚡ 단타봇 [데모/{'4시간봉 RSI반전 ' + a.symbols if a.strategy == 'rsi_ema' else 'ETH 1시간봉 돌파'}]\n{m}")
     print("\n".join(msgs) or "변화 없음")
 
 
