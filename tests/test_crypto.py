@@ -1591,7 +1591,7 @@ def test_mix_leverage_simulate_costs_short_profit_and_liquidation():
     safe = ml.simulate(crash, pd.Series(1.0, index=crash.index), 1, start=10)
     assert safe["ruin"] is None and 0.7 < safe["equity"].iloc[-1] < 0.76
     t = ml.compare(_daily(np.linspace(100, 400, 400)))
-    assert len(t) == 6 and set(t["방향"]) == {"롱만", "롱·숏"} and "파산" in ml.fmt(t)
+    assert len(t) == 2 * len(ml.LEVERAGES) and set(t["방향"]) == {"롱만", "롱·숏"} and "파산" in ml.fmt(t)
 
 
 def test_mix_leverage_trades_only_when_weight_changes():
@@ -1633,3 +1633,81 @@ def test_bitget_demo_uses_public_market_data_for_signals(monkeypatch):
     assert float(demo.closed_candles("1d")["close"].iloc[-1]) == 84000.0
     live = exm.BitgetFutures.from_env("BTC/USDT:USDT", 1, demo=False)
     assert live.data_ex is live.ex and live.ex.options.get("uta") is True            # 실계좌는 같은 객체
+
+
+def test_momentum_leverage_multiplies_position_and_caps_own_money():
+    from crypto.momentum_bot import plan_rebalance, position_budget, run_once_ensemble
+    assert position_budget(70, 1.0, 70, 5) == 350 and position_budget(100, 1.0, 70, 5) == 350   # 내 돈 70 상한 × 5배
+    assert position_budget(70, 1.0, None, 1) == 70
+    act, qty = plan_rebalance(1.0, 1.0, 70, 80000, 0.0, step=0.25, max_notional=70, leverage=5)
+    assert act == "buy" and abs(qty * 80000 - 350) < 1e-6
+    up = list(np.linspace(100, 400, 320))
+    b = _EnsBroker(up, bal=70.0)
+    notes = run_once_ensemble(b, 1.0, max_notional=70, mix=True, leverage=5)
+    assert abs(b.calls[0][2] - 350 / 400) < 1e-4 and "× 5배" in notes[0]
+
+
+def test_plan_signed_flip_add_reduce_and_flat():
+    from crypto.momentum_bot import plan_signed
+    eq, px = 70.0, 80000.0
+    full = 70 * 5 / px
+    assert plan_signed(1.0, 1.0, eq, px, 0.0, max_notional=70, leverage=5) == [("open", full)]
+    acts = plan_signed(-0.5, 1.0, eq, px, full, max_notional=70, leverage=5)          # 롱 → 숏 전환
+    assert acts[0] == ("close", full) and acts[1][0] == "open" and abs(acts[1][1] + 0.5 * full) < 1e-12
+    assert plan_signed(0.0, 1.0, eq, px, -0.5 * full, max_notional=70, leverage=5) == [("close", -0.5 * full)]
+    assert plan_signed(-1.0, 1.0, eq, px, -0.5 * full, max_notional=70, leverage=5)[0][0] == "open"   # 숏 추가
+    assert plan_signed(-0.25, 1.0, eq, px, -1.0 * full, max_notional=70, leverage=5)[0][0] == "reduce"
+    assert plan_signed(1.0, 1.0, eq, px, 0.9 * full, max_notional=70, leverage=5) == []              # 25%p 미만
+
+
+def test_run_once_mix_ls_long_above_cloud_short_below_and_flip():
+    from crypto.momentum_bot import mix_ls_weight, run_once_mix_ls
+    up = list(np.linspace(100, 400, 320))
+    b = _EnsBroker(up, bal=70.0)
+    notes = run_once_mix_ls(b, 1.0, max_notional=70, leverage=5)
+    assert b.calls[0][:2] == ("open", "buy") and abs(b.calls[0][2] - 350 / 400) < 1e-4 and "5배" in notes[0]
+    down = list(np.linspace(400, 100, 320))                       # 장기 하락: 구름 아래, 앙상블 0 → 숏 100%
+    t, npos, state, nt, nb = mix_ls_weight(_EnsBroker(down).df)
+    assert state == "아래" and t == -1.0 and npos == 0 and nt >= nb
+    flip = _EnsBroker(down, pos={"side": "long", "contracts": 0.5, "entry": 300.0}, bal=70.0)
+    notes = run_once_mix_ls(flip, 1.0, max_notional=70, leverage=5)
+    assert flip.calls[0] == ("close", "long", 0.5) and flip.calls[1][:2] == ("open", "sell")
+    assert any("숏" in n for n in notes[1:])
+
+
+def _rsi_df(closes):
+    idx = pd.date_range("2024-01-01", periods=len(closes), freq="1h", tz="UTC")
+    c = np.asarray(closes, float)
+    o = np.r_[c[0], c[:-1]]
+    return pd.DataFrame({"open": o, "high": np.maximum(o, c) + 0.05, "low": np.minimum(o, c) - 0.05, "close": c}, index=idx)
+
+
+def test_rsi_ema_long_signal_needs_cross_and_ema_and_exits():
+    from crypto import rsi_ema as re_
+    base = list(np.linspace(100, 200, 260))                         # 장기 상승 → 종가 > EMA200
+    dip = [200 - 1.5 * k for k in range(1, 9)]                       # 급락 → RSI 30 아래
+    bounce = [dip[-1] + 2.0 * k for k in range(1, 25)]               # 반등 → RSI 30 위로 돌파, 이후 50 이상
+    df = _rsi_df(base + dip + bounce)
+    d = re_.indicators(df)
+    sig = re_.signals(d)
+    assert (sig == 1).any() and not (sig == -1).any()
+    i = int(np.flatnonzero(sig.to_numpy() == 1)[0])
+    assert d["rsi"].iloc[i - 1] <= 30 < d["rsi"].iloc[i] and d["close"].iloc[i] > d["ema"].iloc[i]
+    tr = re_.backtest(df, "T")
+    assert len(tr) >= 1 and tr.iloc[0]["side"] == 1 and tr.iloc[0]["why"] in ("익절", "RSI50 청산", "손절")
+    first = tr.iloc[0]
+    assert first["time"] == df.index[i] and first["exit"] > first["time"]   # 신호 봉 다음부터 보유
+    assert (tr["time"].iloc[1:].to_numpy() >= tr["exit"].iloc[:-1].to_numpy()).all()   # 포지션 1개
+
+
+def test_rsi_ema_stop_before_target_and_costs():
+    from crypto import rsi_ema as re_
+    base = list(np.linspace(100, 200, 260))
+    dip = [200 - 1.5 * k for k in range(1, 9)]
+    crash = [dip[-1] + 1.0] + [dip[-1] - 6.0 * k for k in range(1, 10)]   # 반등 신호 직후 급락 → 손절
+    df = _rsi_df(base + dip + crash)
+    tr = re_.backtest(df, "T")
+    assert len(tr) >= 1 and tr.iloc[0]["why"] == "손절" and tr.iloc[0]["ret"] < -2 * re_.COST
+    s = re_.stats(tr, 1.0)
+    assert s["거래수"] == len(tr) and "손절/익절/RSI" in s
+    assert "승률" in re_.fmt({"T": s}) and re_.stats(tr.iloc[0:0])["거래수"] == 0

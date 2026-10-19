@@ -1,7 +1,7 @@
 """일봉 모멘텀(롱만) 봇: 매일 한 번, 마감된 일봉 기준으로 판단하고 종료.
 
 규칙(백테스트로 검증된 것과 동일): 종가가 lookback 일 전 종가보다 높으면 롱 보유, 아니면 현금.
-레버리지 1배·롱만. 숏은 쓰지 않는다(백테스트에서 도움이 안 됨).
+기본은 레버리지 1배·롱만. mix_ls 모드는 롱·숏(백테스트에서 숏은 대체로 도움이 안 됐음).
 기본은 데모. 실거래는 --live + MOMENTUM_CONFIRM_LIVE=yes 가 모두 있어야 한다(워크플로는 데모 전용)."""
 from __future__ import annotations
 
@@ -42,17 +42,19 @@ def ensemble_weight(closes: pd.Series, lookbacks=ENSEMBLE_LOOKBACKS) -> tuple[fl
     return pos / len(lookbacks), pos
 
 
-def position_budget(equity: float, alloc: float, max_notional: float | None = None) -> float:
-    """비중 100% 일 때의 포지션 금액(USDT). 잔고 × alloc 이되 max_notional 이 있으면 그 이하로 제한한다."""
+def position_budget(equity: float, alloc: float, max_notional: float | None = None, leverage: int = 1) -> float:
+    """비중 100% 일 때의 포지션 금액(USDT) = 사용할 내 돈 × 레버리지.
+    사용할 내 돈 = 잔고 × alloc, max_notional 이 있으면 그 이하(= 증거금 상한)."""
     budget = equity * alloc
-    return min(budget, max_notional) if max_notional else budget
+    return (min(budget, max_notional) if max_notional else budget) * leverage
 
 
 def plan_rebalance(target_w: float, alloc: float, equity: float, price: float, current: float,
-                   step: float = 0.10, min_notional: float = 6.0, max_notional: float | None = None) -> tuple[str, float]:
+                   step: float = 0.10, min_notional: float = 6.0, max_notional: float | None = None,
+                   leverage: int = 1) -> tuple[str, float]:
     """목표 비중(0~1)에 맞추기 위한 ('buy'|'sell'|'hold', 계약 수). 잔고 대비 step(기본 10%p) 미만의
     미세 조정과 최소 주문 금액 미만은 하지 않는다(수수료 절감). 목표가 0이면 전량 청산."""
-    full = position_budget(equity, alloc, max_notional) / price  # 비중 100% 일 때의 수량
+    full = position_budget(equity, alloc, max_notional, leverage) / price  # 비중 100% 일 때의 수량
     delta = full * target_w - current
     if target_w <= 0:
         return ("sell", current) if current * price >= min_notional else ("hold", 0.0)
@@ -90,7 +92,7 @@ def mix_weight(candles: pd.DataFrame) -> tuple[float, int, bool, float] | None:
 
 def run_once_ensemble(broker, alloc: float = 0.5, stop_loss: float | None = None,
                       max_notional: float | None = None, min_equity: float | None = None,
-                      mix: bool = False) -> list[str]:
+                      mix: bool = False, leverage: int = 1) -> list[str]:
     """mix=True 면 섞기(교집합: 앙상블 × 일목 구름 위 여부), 백테스트와 같이 25%p 이상 차이일 때만 조정."""
     candles = broker.closed_candles("1d", limit=max(ENSEMBLE_LOOKBACKS) + 40, deep=True)
     if mix:
@@ -109,9 +111,10 @@ def run_once_ensemble(broker, alloc: float = 0.5, stop_loss: float | None = None
     killed = kill_switch(broker, equity, min_equity)
     if killed:
         return killed
-    act, qty = plan_rebalance(w, alloc, equity, px, current, step=0.25 if mix else 0.10, max_notional=max_notional)
+    act, qty = plan_rebalance(w, alloc, equity, px, current, step=0.25 if mix else 0.10, max_notional=max_notional,
+                              leverage=leverage)
     head = (f"앙상블 모멘텀: {len(ENSEMBLE_LOOKBACKS)}개 기간 중 {npos}개 양(+) → 목표 비중 {w:.0%} "
-            f"(잔고의 {w * alloc:.0%}), 현재 {current:.5f} BTC")
+            f"(잔고의 {w * alloc:.0%}{f' × {leverage}배' if leverage > 1 else ''}), 현재 {current:.5f} BTC")
     if mix:
         head = ("섞기(앙상블×일목): " + head + f" · 일목 구름 {'위 → 앙상블 비중 사용' if above else '아래 → 목표 0%'}\n"
                 + (f"📍 기준 가격: 다음 일봉(한국 09시 마감) 종가가 구름 상단 {next_top:,.0f} 아래로 마감하면 정리"
@@ -126,6 +129,75 @@ def run_once_ensemble(broker, alloc: float = 0.5, stop_loss: float | None = None
         kind = "전량 청산" if qty >= current - 1e-12 else "일부 청산"
         return [head, f"🔴 {qty:.5f} BTC {kind} @ ~{px:,.0f}"]
     return [head, "조정 없음(차이가 작거나 최소 주문 미만)"]
+
+
+def mix_ls_weight(candles: pd.DataFrame) -> tuple[float, int, str, float, float] | None:
+    """섞기 롱·숏: 구름 위 +w(롱), 구름 하단 아래 −(1−w)(숏), 구름 안 0. (부호 있는 목표, 양(+) 기간 수, 상태, 다음 봉 구름 상단·하단)"""
+    from .mix_leverage import cloud_bounds, next_cloud_bounds
+    res = ensemble_weight(candles["close"])
+    if res is None:
+        return None
+    w, npos = res
+    top, bottom = cloud_bounds(candles)
+    c = float(candles["close"].iloc[-1])
+    if c > float(top.iloc[-1]):
+        target, state = w, "위"
+    elif c < float(bottom.iloc[-1]):
+        target, state = -(1 - w), "아래"
+    else:
+        target, state = 0.0, "안"
+    nt, nb = next_cloud_bounds(candles)
+    return target, npos, state, nt, nb
+
+
+def plan_signed(target_w: float, alloc: float, equity: float, price: float, current: float, step: float = 0.25,
+                min_notional: float = 6.0, max_notional: float | None = None, leverage: int = 1) -> list[tuple[str, float]]:
+    """부호 있는 목표(+롱/−숏)에 맞추는 주문 목록. current 도 부호 있는 수량(롱 +, 숏 −).
+    ('close', 수량)=현재 포지션 전량 정리, ('open', ±수량)=그 방향으로 진입·추가, ('reduce', ±수량)=같은 방향 일부 정리."""
+    full = position_budget(equity, alloc, max_notional, leverage) / price
+    target = full * target_w
+    if current != 0 and (target == 0 or target * current < 0):            # 정리 또는 방향 전환
+        acts: list[tuple[str, float]] = [("close", current)]
+        if target != 0 and abs(target) * price >= min_notional:
+            acts.append(("open", target))
+        return acts
+    delta = target - current
+    if abs(delta) * price < min_notional or abs(delta) < step * full:
+        return []
+    return [("open", delta)] if abs(target) > abs(current) else [("reduce", delta)]
+
+
+def run_once_mix_ls(broker, alloc: float = 1.0, max_notional: float | None = None, min_equity: float | None = None,
+                    leverage: int = 1) -> list[str]:
+    candles = broker.closed_candles("1d", limit=max(ENSEMBLE_LOOKBACKS) + 40, deep=True)
+    res = mix_ls_weight(candles)
+    if res is None:
+        return [f"일봉이 부족해 판단 보류 ({len(candles)}개, 필요 {max(ENSEMBLE_LOOKBACKS) + 1}개 이상)"]
+    target, npos, state, nt, nb = res
+    pos = broker.position()
+    current = (float(pos["contracts"]) if pos["side"] == "long" else -float(pos["contracts"])) if pos else 0.0
+    equity, px = broker.balance(), broker.price()
+    killed = kill_switch(broker, equity, min_equity)
+    if killed:
+        return killed
+    kind = "롱" if target > 0 else "숏" if target < 0 else "쉼"
+    head = (f"섞기 롱·숏(앙상블×일목, {leverage}배): {len(ENSEMBLE_LOOKBACKS)}개 기간 중 {npos}개 양(+) · 일목 구름 {state} "
+            f"→ 목표 {kind} {abs(target):.0%}, 현재 {'롱' if current > 0 else '숏' if current < 0 else '없음'} {abs(current):.5f} BTC\n"
+            f"📍 다음 일봉(한국 09시 마감) 기준: 구름 상단 {nt:,.0f} 위 → 롱 / 하단 {nb:,.0f} 아래 → 숏 / 사이 → 정리")
+    notes = [head]
+    for act, q in plan_signed(target, alloc, equity, px, current, max_notional=max_notional, leverage=leverage):
+        if act == "close":
+            broker.close("long" if q > 0 else "short", abs(q))
+            notes.append(f"🔴 {'롱' if q > 0 else '숏'} {abs(q):.5f} BTC 전량 정리 @ ~{px:,.0f}")
+        elif act == "open":
+            broker.open("buy" if q > 0 else "sell", abs(q))
+            notes.append(f"{'🟢 롱' if q > 0 else '🟣 숏'} {abs(q):.5f} BTC 진입 @ ~{px:,.0f}")
+        else:
+            broker.close("long" if q < 0 else "short", abs(q))
+            notes.append(f"🟡 {abs(q):.5f} BTC 일부 정리 @ ~{px:,.0f}")
+    if len(notes) == 1:
+        notes.append("조정 없음(차이가 작거나 최소 주문 미만)")
+    return notes
 
 
 def run_once(broker, lookback: int = 90, alloc: float = 0.5, stop_loss: float | None = None,
@@ -189,11 +261,14 @@ def main() -> None:
     ap.add_argument("--lookback", type=int, default=90)
     ap.add_argument("--alloc", type=float, default=0.5, help="잔고 중 투입 비율(레버리지 1배 기준)")
     ap.add_argument("--stop-loss", type=float, default=None, help="선택: 진입가 대비 손절 비율(백테스트에는 없음)")
-    ap.add_argument("--mode", choices=["single", "ensemble", "mix"], default="single",
+    ap.add_argument("--mode", choices=["single", "ensemble", "mix", "mix_ls"], default="single",
                     help="single: lookback 하나 / ensemble: 30~250일 8개 기간의 양(+) 비율만큼 보유 / "
-                         "mix: 앙상블 × 일목 구름 위 여부(교집합, 25%%p 조정)")
+                         "mix: 앙상블 × 일목 구름 위 여부(교집합, 25%%p 조정) / "
+                         "mix_ls: 구름 위 롱·구름 아래 숏·사이 정리")
     ap.add_argument("--max-notional", type=float, default=None, help="포지션 금액 상한(USDT). 잔고가 커도 이 금액을 넘기지 않음")
     ap.add_argument("--min-equity", type=float, default=None, help="최소 잔고(USDT). 이 아래면 전량 청산하고 신규 진입 중단")
+    ap.add_argument("--leverage", type=int, choices=range(1, 6), default=1, metavar="1-5",
+                    help="레버리지(1~5배). 포지션 금액 = 사용할 내 돈 × 레버리지")
     ap.add_argument("--live", action="store_true")
     ap.add_argument("--check", action="store_true", help="주문하지 않고 연결·잔고·계획만 확인")
     a = ap.parse_args()
@@ -203,12 +278,16 @@ def main() -> None:
     mode = ("실거래" if a.live else "데모") + ("·점검" if a.check else "")
     from .exchange import BitgetFutures
     try:
-        broker = BitgetFutures.from_env(a.symbol, 1, demo=not a.live)  # 레버리지 1배 고정
+        broker = BitgetFutures.from_env(a.symbol, a.leverage, demo=not a.live)
         if a.check:
             broker = CheckBroker(broker)
-        notes = (run_once_ensemble(broker, a.alloc, a.stop_loss, a.max_notional, a.min_equity, mix=a.mode == "mix")
-                 if a.mode in ("ensemble", "mix")
-                 else run_once(broker, a.lookback, a.alloc, a.stop_loss, a.max_notional, a.min_equity))
+        if a.mode == "mix_ls":
+            notes = run_once_mix_ls(broker, a.alloc, a.max_notional, a.min_equity, leverage=a.leverage)
+        elif a.mode in ("ensemble", "mix"):
+            notes = run_once_ensemble(broker, a.alloc, a.stop_loss, a.max_notional, a.min_equity, mix=a.mode == "mix",
+                                      leverage=a.leverage)
+        else:
+            notes = run_once(broker, a.lookback, a.alloc, a.stop_loss, a.max_notional, a.min_equity)
     except Exception as e:
         notify.send(f"❌ 모멘텀봇 오류 [{mode}]: {type(e).__name__}: {str(e)[:300]}")
         raise

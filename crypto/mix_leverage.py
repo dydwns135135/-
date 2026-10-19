@@ -1,4 +1,4 @@
-"""섞기(앙상블 × 일목) 전략을 롱만 / 롱·숏, 레버리지 1·3·5배로 BTC 일봉에서 시뮬레이션한다(청산 포함).
+"""섞기(앙상블 × 일목) 전략을 롱만 / 롱·숏, 레버리지 1·3·5·10배로 BTC 일봉에서 시뮬레이션한다(청산 포함).
 python -m crypto.mix_leverage [--years 7]   (공개 시세만 사용, API 키·주문 없음)
 
 규칙(결과를 보기 전에 정함):
@@ -22,7 +22,7 @@ from .strategies import momentum_ensemble
 FEE, SLIP, MMR = 0.0006, 0.0005, 0.005
 FUND_DAILY = per8h(6.6) * 3
 WARM, STEP = 250, 0.25
-LEVERAGES = (1, 3, 5)
+LEVERAGES = (1, 3, 5, 10)
 
 
 def cloud_bounds(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
@@ -34,6 +34,16 @@ def cloud_bounds(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
     b = ((h.rolling(52).max() + l.rolling(52).min()) / 2).shift(26)
     both = pd.concat([a, b], axis=1)
     return both.max(axis=1, skipna=False), both.min(axis=1, skipna=False)
+
+
+def next_cloud_bounds(df: pd.DataFrame) -> tuple[float, float]:
+    """다음 봉(진행 중인 봉)의 (구름 상단, 구름 하단). 선행스팬은 26봉 앞에 그리므로 이미 정해져 있다."""
+    h, l = df["high"], df["low"]
+    tenkan = (h.rolling(9).max() + l.rolling(9).min()) / 2
+    kijun = (h.rolling(26).max() + l.rolling(26).min()) / 2
+    a = float(((tenkan + kijun) / 2).shift(25).iloc[-1])
+    b = float(((h.rolling(52).max() + l.rolling(52).min()) / 2).shift(25).iloc[-1])
+    return max(a, b), min(a, b)
 
 
 def stepped_signed(w: pd.Series, step: float = STEP) -> pd.Series:
