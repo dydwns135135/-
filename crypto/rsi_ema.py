@@ -7,7 +7,9 @@ python -m crypto.rsi_ema [--years 3]   (Bitget 공개 시세만 사용, API 키�
 - 롱은 RSI ≥ 50, 숏은 RSI ≤ 50 이 되면 청산
 체결 가정(Pine 기본과 같게): 신호 봉 마감 후 다음 봉 시가 진입, RSI 청산도 다음 봉 시가.
 손절·익절이 같은 봉에서 모두 닿으면 손절이 먼저(보수적). 시가가 이미 손절·익절을 넘었으면 시가 체결.
-비용: 체결당 수수료 0.06% + 슬리피지 0.05%(왕복 0.22%). 레버리지 1배·포지션 1개·전액 기준. 펀딩비 미반영."""
+비용: 체결당 수수료 0.06% + 슬리피지 0.05%(왕복 0.22%). 레버리지 1배·포지션 1개·전액 기준. 펀딩비 미반영.
+데이터: 코인마다 1시간봉 3년치를 받아 2·4·8시간봉·일봉으로 묶는다(거래소 4시간봉 조회가 기간을 짧게 주는 문제 회피).
+시간봉·코인을 여러 개 보는 만큼 '우연히 좋아 보이는 조합'이 섞일 수 있다 → 앞·뒤 절반이 모두 좋은지 함께 본다."""
 from __future__ import annotations
 
 import argparse
@@ -21,8 +23,17 @@ from .upbit_scalp import rsi
 RSI_LEN, OS, OB, EMA_LEN, ATR_LEN = 14, 30.0, 70.0, 200, 14
 SL_MULT, TP_MULT = 2.0, 3.0
 COST = 0.0011                       # 체결당
-SYMBOLS = ("BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT")
-BARS_PER_YEAR = {"1h": 24 * 365, "4h": 6 * 365}
+SYMBOLS = ("BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT", "DOGE/USDT:USDT", "BNB/USDT:USDT")
+TIMEFRAMES = {"1h": 1, "2h": 2, "4h": 4, "8h": 8, "1d": 24}     # 1시간봉을 묶어서 만든다(모든 시간봉이 같은 기간)
+
+
+def resample(df: pd.DataFrame, hours: int) -> pd.DataFrame:
+    """1시간봉 → N시간봉(UTC 0시 기준). 마지막 묶음은 덜 찼을 수 있어 버린다."""
+    if hours == 1:
+        return df
+    out = df.resample(f"{hours}h", origin="epoch").agg(
+        {"open": "first", "high": "max", "low": "min", "close": "last"}).dropna()
+    return out.iloc[:-1]
 
 
 def indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -44,6 +55,27 @@ def signals(d: pd.DataFrame) -> pd.Series:
     out[short.fillna(False)] = -1
     out.iloc[:EMA_LEN] = 0
     return out
+
+
+def exit_check(side: int, sl: float, tp: float, d: pd.DataFrame) -> tuple[str, float] | None:
+    """진입 이후 마감봉 d(rsi 포함)로 청산 여부 판정 — 봇용. (이유, 기준가) 또는 None(보유 유지).
+    손절·익절이 같은 봉이면 손절 우선, RSI 50 은 그 봉 종가 기준(봇은 다음 실행 때 시장가로 정리)."""
+    for o, h, l, c, r in zip(d["open"], d["high"], d["low"], d["close"], d["rsi"]):
+        if side > 0:
+            if l <= sl:
+                return "손절", min(o, sl)
+            if h >= tp:
+                return "익절", max(o, tp)
+            if r >= 50:
+                return "RSI50 청산", c
+        else:
+            if h >= sl:
+                return "손절", max(o, sl)
+            if l <= tp:
+                return "익절", min(o, tp)
+            if r <= 50:
+                return "RSI50 청산", c
+    return None
 
 
 def backtest(df: pd.DataFrame, symbol: str = "") -> pd.DataFrame:
@@ -113,33 +145,59 @@ def fmt(rows: dict[str, dict]) -> str:
     return t.to_string()
 
 
+def summary_row(tr: pd.DataFrame) -> dict:
+    """시간봉 하나의 코인 합산 요약."""
+    if tr.empty:
+        return {"거래수": 0}
+    mid = tr["time"].min() + (tr["time"].max() - tr["time"].min()) / 2
+    a, b = tr[tr["time"] < mid], tr[tr["time"] >= mid]
+    s = stats(tr)
+    return {"거래수": len(tr), "승률": s["승률"], "평균": s["평균"], "앞절반 평균": a["ret"].mean() if len(a) else float("nan"),
+            "뒤절반 평균": b["ret"].mean() if len(b) else float("nan"),
+            "롱 평균": tr.loc[tr["side"] > 0, "ret"].mean(), "숏 평균": tr.loc[tr["side"] < 0, "ret"].mean(),
+            "최대낙폭": s["최대낙폭"]}
+
+
+def fmt_summary(rows: dict[str, dict]) -> str:
+    t = pd.DataFrame(rows).T
+    t["거래수"] = t["거래수"].astype(int)
+    t["승률"] = t["승률"].map(lambda x: "-" if x != x else f"{x * 100:.0f}%")
+    for c in ("평균", "앞절반 평균", "뒤절반 평균", "롱 평균", "숏 평균"):
+        t[c] = t[c].map(lambda x: "-" if x != x else f"{x * 100:+.2f}%")
+    t["최대낙폭"] = t["최대낙폭"].map(lambda x: f"{x * 100:+.0f}%")
+    return t.to_string()
+
+
 def main() -> None:
     from .backtest_report import load_data
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--years", type=float, default=3.0)
     a = ap.parse_args()
-    out = []
-    for tf, min_bars in (("1h", 3000), ("4h", 1500)):
-        rows, all_tr, info = {}, [], []
-        for sym in SYMBOLS:
-            ex, df = load_data(a.years, symbol=sym, min_bars=min_bars, timeframe=tf, fallback_years=(3, 2, 1))
+    hourly, info = {}, []
+    for sym in SYMBOLS:
+        try:
+            ex, df = load_data(a.years, symbol=sym, min_bars=3000, timeframe="1h", fallback_years=(3, 2, 1))
+        except SystemExit as e:                        # 한 코인이 안 받아져도 나머지는 진행
+            info.append(f"{sym.split('/')[0]} 실패: {str(e)[:80]}")
+            continue
+        hourly[sym] = df
+        info.append(f"{sym.split('/')[0]} {df.index[0]:%Y-%m-%d}~{df.index[-1]:%Y-%m-%d}")
+    out = ["데이터(1시간봉): " + " | ".join(info), ""]
+    summary, detail = {}, []
+    for tf, hours in TIMEFRAMES.items():
+        rows, all_tr = {}, []
+        for sym, h in hourly.items():
+            df = resample(h, hours)
             tr = backtest(df, sym)
             all_tr.append(tr)
-            coin = sym.split("/")[0]
-            rows[coin] = stats(tr, len(df) / BARS_PER_YEAR[tf])
-            info.append(f"{coin} {len(df)}봉 {df.index[0]:%Y-%m-%d}~")
-        tr = pd.concat(all_tr, ignore_index=True)
-        if len(tr):
-            mid = tr["time"].min() + (tr["time"].max() - tr["time"].min()) / 2
-            rows["합산 전체"] = stats(tr)
-            rows["합산 앞절반"] = stats(tr[tr["time"] < mid])
-            rows["합산 뒤절반"] = stats(tr[tr["time"] >= mid])
-            rows["합산 롱만"] = stats(tr[tr["side"] > 0])
-            rows["합산 숏만"] = stats(tr[tr["side"] < 0])
-        out += [f"=== {tf} · " + " | ".join(info) + " ===", fmt(rows), ""]
+            rows[sym.split("/")[0]] = stats(tr, (df.index[-1] - df.index[0]).days / 365)
+        tr = pd.concat(all_tr, ignore_index=True) if all_tr else pd.DataFrame()
+        summary[tf] = summary_row(tr)
+        detail += [f"--- {tf} 코인별 ---", fmt(rows), ""]
+    out += ["=== 시간봉별 요약 (코인 합산, 거래당 수익률은 1배·비용 후) ===", fmt_summary(summary), ""] + detail
     out += ["규칙은 Pine 스크립트 그대로(RSI 14, 30/70 돌파, EMA200 필터, 손절 2×ATR, 익절 3×ATR, RSI 50 청산).",
             "1배·전액·포지션 1개 기준 거래당 수익률(비용 왕복 0.22% 반영). 레버리지 N배면 수익·손실·낙폭이 대략 N배.",
-            "'합산'의 연환산은 의미가 없어 비웠습니다. 펀딩비 미반영. 과거 데이터이며 수익을 보장하지 않습니다."]
+            "앞·뒤 절반이 둘 다 플러스이고 거래수가 충분해야 믿을 만합니다. 펀딩비 미반영. 과거 데이터이며 수익을 보장하지 않습니다."]
     text = "\n".join(out)
     print(text)
     os.makedirs("data", exist_ok=True)
