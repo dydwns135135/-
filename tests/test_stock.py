@@ -361,11 +361,14 @@ def test_evaluate_ignores_snapshots_with_lagging_flow():
             rows.append({"date": f"{days[t]:%Y-%m-%d}", "code": code, "name": code, "theme": "T", "close": c[t], "score": rng.random(),
                          "stage": "관망", "bias": "중립", "bias_pts": 0, "ret5": 0, "ret20": 0, "vol_ratio": 1, "prox60": 1,
                          "flow_ratio": c[t + 10] / c[t] - 1, "indiv_ratio": 0, "both_buy": True, "foreign5": 0, "inst5": 0, "indiv5": 0,
-                         "flow_last": f"{days[t - 1]:%Y-%m-%d}"})  # 전부 하루 늦은 수급
+                         "flow_last": f"{days[t - 3]:%Y-%m-%d}"})  # 전부 이틀 이상 늦은 수급
     out = evaluate(pd.DataFrame(rows), market)
-    assert "수급 상위 3" not in out and "확정된 날이 아직 0일" in out and "하루 늦은" in out
-    rows2 = [dict(r, flow_last=r["date"]) for r in rows]  # 전부 그날 수급이면 시험이 진행된다
+    assert "수급 상위 3" not in out and "확인된 날이 아직 0일" in out and "이틀 이상 늦은" in out
+    one_day = [dict(r, flow_last=f"{days[int(np.where(days == pd.Timestamp(r['date']))[0][0]) - 1]:%Y-%m-%d}") for r in rows]  # 하루 늦은 수급은 정상
+    assert "수급 상위 3" in evaluate(pd.DataFrame(one_day), market)
+    rows2 = [dict(r, flow_last=r["date"]) for r in rows]  # 그날 수급이 있으면 더 좋다
     assert "수급 상위 3" in evaluate(pd.DataFrame(rows2), market)
+    assert "수급 상위 3" not in evaluate(pd.DataFrame([dict(r, flow_last=None) for r in rows]), market)  # 수급 기록이 없으면 제외
 
 
 def _stock(code, name, kind="stock"):
@@ -521,4 +524,16 @@ def test_group_excess_and_evaluate_scan_detect_planted_signal():
     assert "아직 부족" in evaluate_scan(snap[snap["date"] <= f"{days[70]:%Y-%m-%d}"], market)
     assert "아직 없습니다" in evaluate_scan(snap.iloc[:0], market)
     stale = snap.assign(flow_last="2000-01-01")                      # 수급이 늦은 날은 모두 제외
-    assert "확정된 날이 아직 0일" in evaluate_scan(stale, market)
+    assert "확인된 날이 아직 0일" in evaluate_scan(stale, market)
+
+
+def test_flowcheck_allows_one_business_day_lag(tmp_path, capsys):
+    import pandas as pd
+    from stock.flowcheck import lag_ok, main
+    s = pd.DataFrame({"date": ["2026-10-26", "2026-10-28", "2026-10-28", "2026-10-28", "2026-10-28"],
+                      "flow_last": ["2026-10-23", "2026-10-28", "2026-10-27", "2026-10-26", None]})  # 월(금→월 OK), 그날, 하루 전, 이틀 전, 없음
+    assert lag_ok(s).tolist() == [True, True, True, False, False]
+    p = tmp_path / "snap.csv"
+    pd.DataFrame({"date": ["2026-10-28"] * 5, "flow_last": ["2026-10-27"] * 5}).to_csv(p, index=False)
+    main(str(p), "수급 스냅샷")
+    assert "직전 거래일까지 확인된 종목 5/5" in capsys.readouterr().out  # 모두 하루 늦어도 경고 없음
