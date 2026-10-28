@@ -366,3 +366,69 @@ def test_evaluate_ignores_snapshots_with_lagging_flow():
     assert "수급 상위 3" not in out and "확정된 날이 아직 0일" in out and "하루 늦은" in out
     rows2 = [dict(r, flow_last=r["date"]) for r in rows]  # 전부 그날 수급이면 시험이 진행된다
     assert "수급 상위 3" in evaluate(pd.DataFrame(rows2), market)
+
+
+THEME_LIST_HTML = """<table><tr><th>테마명</th><th>전일대비</th><th>최근3일</th></tr>
+<tr><td class="col_type1"><a href="/sise/sise_group_detail.naver?type=theme&no=511">HBM(High Bandwidth Memory)</a></td>
+<td><span>+1.20%</span></td><td><span>+6.50%</span></td><td>10</td><td>1</td><td>2</td>
+<td><a href="/item/main.naver?code=000660">SK하이닉스</a></td><td><a href="/item/main.naver?code=042700">한미반도체</a></td></tr>
+<tr><td><a href="/sise/sise_group_detail.naver?type=theme&no=303">방위산업</a></td><td><span>-0.80%</span></td><td><span>+2.10%</span></td>
+<td><a href="/item/main.naver?code=012450">한화에어로스페이스</a></td></tr>
+<tr><td><a href="/sise/sise_group_detail.naver?type=theme&no=88">조선</a></td><td><span>+3.00%</span></td><td><span>-1.00%</span></td></tr>
+<tr><td><a href="/sise/sise_group_detail.naver?type=theme&no=511">HBM(High Bandwidth Memory)</a></td><td>중복 줄</td></tr></table>"""
+
+
+def _detail_html(codes):
+    rows = "".join(f'<tr><td><div class="name_area"><a href="/item/main.naver?code={c}">N{c}</a></div></td><td>1,000</td></tr>' for c in codes)
+    return f"<table>{rows}<tr><td><a href=\"/item/main.naver?code={codes[0]}\">N{codes[0]}</a></td></tr></table>"  # 같은 종목이 다시 나옴
+
+
+def test_scan_parsers_and_picking():
+    from stock.scan import parse_theme_list, parse_theme_members, pick_themes
+    th = parse_theme_list(THEME_LIST_HTML)
+    assert [t["no"] for t in th] == ["511", "303", "88"]  # 중복 줄 제거
+    assert th[0]["d1"] == 1.2 and th[0]["d3"] == 6.5 and th[0]["leaders"] == [("000660", "SK하이닉스"), ("042700", "한미반도체")]
+    assert th[2]["d1"] == 3.0 and th[2]["d3"] == -1.0
+    got = pick_themes(th, n3=1, n1=1)  # 3일 1위(HBM) + 전일 1위(조선)
+    assert [t["no"] for t in got] == ["511", "88"]
+    assert parse_theme_members(_detail_html(["005930", "000660", "035420"])) == [("005930", "N005930"), ("000660", "N000660"), ("035420", "N035420")]
+    assert parse_theme_list("<html>점검 중입니다</html>") == []
+
+
+def test_build_scan_merges_leaders_dedupes_and_reports_failure():
+    import pytest
+    from stock.scan import DETAIL_URL, LIST_URL, build_scan
+    def fake_get(url, **p):
+        if url == LIST_URL:
+            return THEME_LIST_HTML if p.get("page") == 1 else "<table></table>"
+        no = p["no"]
+        return {"511": _detail_html(["000660", "058470", "240810", "036930"]),   # 000660 은 주도주와 겹침
+                "303": _detail_html(["012450", "079550", "047810"]),
+                "88": _detail_html(["009540"])}[no]                               # 종목이 3개 미만 → 제외
+    tm, stats = build_scan(n3=5, n1=5, per_theme=4, delay=0, get=fake_get, log=lambda m: None)
+    assert list(tm["HBM(High Bandwidth Memory)"]) == ["000660", "042700", "058470", "240810"]  # 주도주 먼저, 중복 제거, 4개 제한
+    assert "조선" not in tm and stats["themes_thin"] == 1 and stats["themes_used"] == 2 and stats["stocks"] == 7
+    with pytest.raises(RuntimeError, match="점검 중"):
+        build_scan(delay=0, get=lambda url, **p: "<html>점검 중입니다</html>", log=lambda m: None)
+
+
+def test_scan_cli_end_to_end(capsys, monkeypatch):
+    import stock.__main__ as m
+    import stock.scan as scan
+    from stock.data import synthetic_market
+    themes = {"테마A": {"000001": "가", "000002": "나", "000003": "다", "000004": "라"},
+              "테마B": {"000003": "다", "000005": "마", "000006": "바"}}   # 000003 은 두 테마에 걸침
+    mk = synthetic_market(themes=themes, index="KOSPI")
+    monkeypatch.setattr(scan, "build_scan", lambda **k: (themes, {"themes_total": 120, "themes_picked": 2, "themes_used": 2, "themes_thin": 0, "stocks": 6}))
+    monkeypatch.setattr(m, "load_naver", lambda codes, **k: mk)
+    m.main(["--scan"])
+    out = capsys.readouterr().out
+    assert "[훑기] 네이버 테마 120개 중 움직이는 2개" in out and "테마A" in out and "데이터 수집 실패 0개" in out
+    import re
+    names = re.findall(r"^  (\S+)\(테마[AB]\) ", out, flags=re.M)  # 선점 후보·관심 종목 줄
+    assert len(names) == len(set(names))  # 여러 테마에 걸친 종목도 한 번만
+    import pytest
+    with pytest.raises(SystemExit):
+        m.main(["--scan", "--demo"])
+    with pytest.raises(SystemExit):
+        m.main([])
