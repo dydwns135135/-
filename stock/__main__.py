@@ -6,6 +6,7 @@ import os
 
 from stock.analyze import analyze_themes, decide, market_regime
 from stock.dart import fetch_summaries
+from stock.naver import load_naver
 from stock.data import load_csv_dir, load_pykrx, synthetic_market
 from stock.themes import THEMES
 from trader import notify
@@ -18,6 +19,7 @@ def main(argv=None):
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--demo", action="store_true", help="합성 데이터로 시연")
     g.add_argument("--pykrx", action="store_true", help="pykrx 실데이터(pip install pykrx)")
+    g.add_argument("--naver", action="store_true", help="네이버 금융 실데이터(해외 서버에서도 가능)")
     g.add_argument("--csv", metavar="DIR", help="<코드>.csv 폴더")
     ap.add_argument("--top", type=int, default=5, help="종목 표시 개수")
     ap.add_argument("--dart", action="store_true", help="DART 공시 확인(환경변수 DART_API_KEY 필요)")
@@ -42,6 +44,8 @@ def run(a):
 
     if a.demo:
         market = synthetic_market()
+    elif a.naver:
+        market = load_naver([c for m in THEMES.values() for c in m])
     elif a.pykrx:
         market = load_pykrx([c for m in THEMES.values() for c in m])
     else:
