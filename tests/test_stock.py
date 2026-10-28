@@ -564,7 +564,7 @@ def test_lag_flow_unifies_flow_definition_across_stocks():
     assert lag_flow({"D": none})["D"].attrs["flow_last"] is None
 
 
-def test_saved_snapshot_uses_lagged_flow_but_report_keeps_today(capsys, monkeypatch, tmp_path):
+def test_report_and_saved_snapshot_share_lagged_flow(capsys, monkeypatch, tmp_path):
     import pandas as pd
     import stock.__main__ as m
     import stock.scan as scan
@@ -575,11 +575,14 @@ def test_saved_snapshot_uses_lagged_flow_but_report_keeps_today(capsys, monkeypa
                                                                     "member_errors": {}, "stocks": 10}))
     monkeypatch.setattr(m, "load_naver", lambda codes, **k: mk)
     m.main(["--scan", "--out", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert "가격은 오늘 종가, 수급은 직전 거래일까지" in out
     snap = pd.read_csv(tmp_path / "scan_snapshot.csv", dtype={"code": str})
-    for code in ("000001", "000007"):
-        row = snap[snap["code"] == code].iloc[0]
-        assert abs(row["foreign5"] - mk[code]["foreign"].iloc[-6:-1].sum()) < 1e-3   # 저장분: 직전 5거래일 수급(오늘 제외)
     st = pd.read_csv(tmp_path / "stocks.csv", dtype={"code": str})
-    r = st[st["code"] == "000001"].iloc[0]
-    assert abs(r["foreign5"] - mk["000001"]["foreign"].iloc[-5:].sum()) < 1e-3          # 화면 리포트: 오늘 수급 포함 그대로
-    assert (tmp_path / "scan_themes.csv").exists()
+    for code in ("000001", "000007"):
+        want = mk[code]["foreign"].iloc[-6:-1].sum()                       # 직전 5거래일 수급(오늘 제외)
+        assert abs(snap[snap["code"] == code].iloc[0]["foreign5"] - want) < 1e-3
+        assert abs(st[st["code"] == code].iloc[0]["foreign5"] - want) < 1e-3  # 리포트와 저장분이 같은 정의(이중으로 밀리지 않음)
+    th, ths = pd.read_csv(tmp_path / "themes.csv"), pd.read_csv(tmp_path / "scan_themes.csv")
+    assert th["theme"].tolist() == ths["theme"].tolist()                      # 저장 테마 순위 = 리포트 테마 순위
+    assert snap["theme_rank"].min() == 1
