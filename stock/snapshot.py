@@ -12,6 +12,32 @@ COLS = ["date", "code", "name", "theme", "close", "score", "stage", "bias", "bia
         "prox60", "flow_ratio", "indiv_ratio", "both_buy", "foreign5", "inst5", "indiv5", "flow_last"]
 
 
+FLOW_COLS = ("foreign", "inst", "individual")
+
+
+def lag_flow(market):
+    """저장용: 수급을 모든 종목에서 '직전 거래일까지'로 통일한다(가격·거래량은 그날 종가 그대로).
+
+    네이버는 당일 수급을 저녁에 종목별로 순서대로 올려서(20:04에 0/182, 20:18에 90/182종목) 같은 날 스냅샷 안에서도 어떤 종목은
+    오늘 수급이 있고 어떤 종목은 없다. 수급 열을 한 거래일 뒤로 밀어(shift) 오늘 수급이 있어도 쓰지 않으면 실행 시각과 상관없이
+    모든 종목이 같은 정의(최근 5거래일 가격·거래량 + 직전 5거래일 수급)가 된다. 둘 다 그 시점에 알 수 있는 값이라 미래 정보는 없다.
+    """
+    out = {}
+    for code, df in market.items():
+        cols = [c for c in FLOW_COLS if c in df.columns]
+        if not cols or len(df) < 2:
+            out[code] = df
+            continue
+        d = df.copy()
+        d[cols] = d[cols].shift(1).fillna(0.0)
+        prev = f"{df.index[-2]:%Y-%m-%d}"
+        fl = df.attrs.get("flow_last")
+        d.attrs = dict(df.attrs)
+        d.attrs["flow_last"] = fl if (fl is None or str(fl) < prev) else prev  # 직전 거래일보다 더 늦은 수급 기록은 그대로 둔다
+        out[code] = d
+    return out
+
+
 def build_snapshot(stocks, market):
     """analyze_themes 의 종목표 + 일봉 마지막 날짜·종가 → 저장용 표. date 는 각 종목 일봉의 마지막 날짜."""
     s = stocks.copy()

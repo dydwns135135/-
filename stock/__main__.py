@@ -165,13 +165,16 @@ def run(a):
         os.makedirs(a.out, exist_ok=True)
         themes.to_csv(os.path.join(a.out, "themes.csv"), index=False, encoding="utf-8-sig")
         stocks.to_csv(os.path.join(a.out, "stocks.csv"), index=False, encoding="utf-8-sig")
-        if scan_stats:  # 훑기 결과는 소속 테마와 함께 매일 저장해 둔다(워크플로가 stock-data 브랜치의 scan/ 에 보관)
-            from stock.snapshot import build_scan_snapshot
-            build_scan_snapshot(stocks_all, themes, market).to_csv(os.path.join(a.out, "scan_snapshot.csv"), index=False, encoding="utf-8-sig")
-        elif not us:  # 한국 수급은 과거 이력을 구할 수 없어 매일 저장해 둔다(워크플로가 stock-data 브랜치의 kr/ 에 보관)
-            from stock.snapshot import build_snapshot
-            build_snapshot(stocks, market).to_csv(os.path.join(a.out, "snapshot.csv"), index=False, encoding="utf-8-sig")
-
+        if scan_stats or not us:
+            # 저장용 스냅샷은 수급을 직전 거래일까지로 통일해 다시 분석한다(리포트에 보낸 값과 수급 정의만 다르다)
+            from stock.snapshot import build_scan_snapshot, build_snapshot, lag_flow
+            mk = lag_flow(market)
+            th_s, st_s = analyze_themes(mk, themes_map)
+            if scan_stats:  # 훑기 결과는 소속 테마와 함께 매일 저장해 둔다(워크플로가 stock-data 브랜치의 scan/ 에 보관)
+                build_scan_snapshot(st_s, th_s, mk).to_csv(os.path.join(a.out, "scan_snapshot.csv"), index=False, encoding="utf-8-sig")
+                th_s.to_csv(os.path.join(a.out, "scan_themes.csv"), index=False, encoding="utf-8-sig")
+            else:  # 한국 수급은 과거 이력을 구할 수 없어 매일 저장해 둔다(워크플로가 stock-data 브랜치의 kr/ 에 보관)
+                build_snapshot(st_s, mk).to_csv(os.path.join(a.out, "snapshot.csv"), index=False, encoding="utf-8-sig")
 
 if __name__ == "__main__":
     main()
