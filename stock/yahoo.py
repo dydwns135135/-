@@ -61,30 +61,70 @@ def fetch_yahoo(sym, days="1y", tries=3, sleep=time.sleep):
 
 
 def fetch_stooq(sym):
-    r = requests.get("https://stooq.com/q/d/l/", params={"s": _stooq_sym(sym), "i": "d"}, headers=HEAD, timeout=20)
+    r = requests.get("https://stooq.com/q/d/l/", params={"s": _stooq_sym(sym), "i": "d"}, headers=HEAD, timeout=8)
     r.raise_for_status()
     return parse_stooq(r.text)
 
 
-def fetch(sym, days="1y", log=print):
-    """야후 → 실패 시 Stooq. 둘 다 실패하면 두 오류를 함께 올린다."""
-    try:
-        return fetch_yahoo(sym, days)
-    except Exception as e1:
+def parse_naver_us(rows):
+    """네이버 해외 일봉 JSON(list) → DataFrame. 필드: localDate, openPrice, highPrice, lowPrice, closePrice, accumulatedTradingVolume."""
+    recs = {}
+    for d in rows:
         try:
-            df = fetch_stooq(sym)
-            log(f"{sym}: 야후 실패({e1}) → Stooq 사용")
-            return df
-        except Exception as e2:
-            raise RuntimeError(f"야후: {e1} / Stooq: {type(e2).__name__}: {str(e2)[:60]}")
+            recs[pd.Timestamp(str(d["localDate"]))] = [float(d[k]) for k in
+                ("openPrice", "highPrice", "lowPrice", "closePrice", "accumulatedTradingVolume")]
+        except (KeyError, ValueError, TypeError):
+            continue
+    if not recs:
+        raise ValueError("네이버 해외 응답에 데이터 없음")
+    return pd.DataFrame(recs, index=["open", "high", "low", "close", "volume"]).T.sort_index().tail(260)
+
+
+def fetch_naver_us(sym):
+    """네이버 해외주식 일봉. 거래소 접미사(.O 나스닥, .N 뉴욕, .K 아카)를 차례로 시도한다."""
+    end = pd.Timestamp.today().normalize()
+    p = {"startDateTime": (end - pd.Timedelta(days=420)).strftime("%Y%m%d0000"), "endDateTime": end.strftime("%Y%m%d2359")}
+    errs = []
+    for suf in ((".O", ".N", ".K") if "." not in sym else ("",)):
+        try:
+            r = requests.get(f"https://api.stock.naver.com/chart/foreign/item/{sym}{suf}/day", params=p,
+                             headers=HEAD, timeout=15)
+            r.raise_for_status()
+            return parse_naver_us(r.json())
+        except Exception as e:
+            errs.append(f"{suf or '-'}:{type(e).__name__}")
+    raise RuntimeError("네이버 " + ",".join(errs))
+
+
+def fetch(sym, days="1y", log=print):
+    """네이버(GitHub 서버에서 접속되는 것으로 확인된 곳) → 야후 → Stooq 순서. 모두 실패하면 오류를 모아 올린다."""
+    errs = []
+    if sym != "^GSPC":  # 네이버는 지수 주소를 몰라 지수는 SPY로 대체하게 둔다
+        try:
+            return fetch_naver_us(sym)
+        except Exception as e:
+            errs.append(str(e)[:80])
+    try:
+        df = fetch_yahoo(sym, days, tries=2)
+        if errs:
+            log(f"{sym}: 네이버 실패 → 야후 사용")
+        return df
+    except Exception as e:
+        errs.append(str(e)[:60])
+    try:
+        df = fetch_stooq(sym)
+        log(f"{sym}: Stooq 사용")
+        return df
+    except Exception as e:
+        errs.append(f"Stooq {type(e).__name__}")
+    raise RuntimeError(" / ".join(errs))
 
 
 def load_yahoo(tickers, delay=0.8, log=print):
     try:
-        idx = fetch("^GSPC", log=log)
+        idx = fetch("SPY", log=log)  # S&P500 ETF를 시황 지수로 사용(네이버에서 받을 수 있음)
     except Exception:
-        idx = fetch("SPY", log=log)  # 지수가 안 되면 S&P500 ETF로 대체
-        log("S&P500 지수 대신 SPY(ETF) 사용")
+        idx = fetch("^GSPC", log=log)
     out = {"SPX": idx[["close", "volume"]]}
     for t in tickers:
         try:
