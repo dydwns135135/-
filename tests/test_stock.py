@@ -170,3 +170,20 @@ def test_yahoo_retry_switches_host(monkeypatch):
         return R(429) if len(calls) < 3 else R(200, chart)
     monkeypatch.setattr(y.requests, "get", fake_get)
     assert len(y.fetch_yahoo("NVDA", sleep=lambda s: None)) == 2 and "query2" in calls[1]
+
+
+def test_naver_us_parses_nested_json_and_reports_errors(monkeypatch):
+    import pytest
+    import stock.yahoo as y
+    nested = {"isSuccess": True, "result": {"priceInfos": [
+        {"localDate": "20261027", "openPrice": 1, "highPrice": 2, "lowPrice": 1, "closePrice": 2, "accumulatedTradingVolume": 10},
+        {"localDate": "20261028", "openPrice": 2, "highPrice": 3, "lowPrice": 1, "closePrice": 3, "accumulatedTradingVolume": 20}]}}
+    assert y.parse_naver_us(nested)["close"].iloc[-1] == 3
+
+    class R:
+        status_code, text = 404, "Not Found page"
+    monkeypatch.setattr(y.requests, "get", lambda *a, **k: R())
+    with pytest.raises(RuntimeError) as e:
+        y.fetch_naver_us("NVDA")
+    msg = str(e.value)
+    assert ".O#1 HTTP404" in msg and ".K#2 HTTP404" in msg  # 어느 후보가 어떤 이유로 실패했는지 남는다
