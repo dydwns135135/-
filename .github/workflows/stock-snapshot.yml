@@ -1,7 +1,7 @@
 name: "stock-snapshot (한국 수급 스냅샷 저장, 텔레그램 리포트 없음)"
 
-# 장 마감 직후(16:30)에는 네이버에 당일 외국인·기관 수급이 아직 올라오지 않아 하루 늦은 값이 저장된다.
-# 그래서 수급이 확정된 뒤인 한국시간 19:30에 한 번 더 분석해 stock-data 브랜치에 날짜별 CSV로 쌓는다.
+# 네이버는 당일 외국인·기관 수급을 저녁 8시 이후에도 주지 않아(2026-10-28 확인) 수급은 직전 거래일까지가 최신이다.
+# 가격은 그날 종가, 수급은 하루 전까지로 매일 똑같이 정의해 한국시간 19:30에 stock-data 브랜치에 날짜별 CSV로 쌓는다.
 # 쌓인 스냅샷은 매주 토요일 stock-backtest 의 '수급 버전 시험'에 쓰인다. 주문·일일 리포트와 무관하다.
 # 스케줄은 저장소 변수 STOCK_ENABLED=true 일 때만 동작(수동 실행은 항상 가능).
 on:
@@ -38,17 +38,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python - <<'PY'
-          import pandas as pd
-          from trader import notify
-          s = pd.read_csv("result/snapshot.csv")
-          ok = int((s["flow_last"] == s["date"]).sum())
-          msg = f"수급 스냅샷 {s['date'].max()}: 당일 수급 확정 {ok}/{len(s)}종목"
-          print(msg)
-          if ok < 0.8 * len(s):
-              notify.send("⚠️ " + msg + " — 네이버 수급이 아직 확정 전입니다. 이 날 스냅샷은 시험에서 제외되며, 실행 시각을 늦추는 것을 검토하세요.")
-          PY
+        run: python -m stock.flowcheck result/snapshot.csv 수급 스냅샷
 
       - name: Save snapshot
         if: ${{ hashFiles('result/snapshot.csv') != '' }}

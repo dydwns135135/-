@@ -1,7 +1,7 @@
 name: "stock-scan (한국 시장 훑기 → 텔레그램, 결과 저장)"
 
 # 네이버 모바일 JSON 의 테마 목록에서 오늘 오르는 테마를 자동으로 골라 구성 종목을 분석하고 텔레그램으로 보낸다. 주문은 하지 않는다.
-# 당일 외국인·기관 수급이 확정된 뒤인 한국시간 19:40에 평일마다 돌며, 결과(종목별 점수·소속 테마)를 stock-data 브랜치의 scan/<날짜>.csv 로 쌓는다.
+# 한국시간 19:40에 평일마다 돌며, 결과(종목별 점수·소속 테마)를 stock-data 브랜치의 scan/<날짜>.csv 로 쌓는다.
 # 쌓인 훑기 결과는 매주 토요일 stock-backtest 의 '쌓은 데이터 시험'에서 훑기 상위 종목·테마가 실제로 더 올랐는지 확인하는 데 쓰인다.
 # 스케줄은 저장소 변수 STOCK_ENABLED=true 일 때만 동작(수동 실행은 항상 가능).
 on:
@@ -34,23 +34,13 @@ jobs:
           if [ "${{ github.event_name }}" = "schedule" ] && [ "$ENABLED" != "true" ]; then echo "STOCK_ENABLED!=true, 건너뜀"; exit 0; fi
           python -m stock --scan --telegram --out result
 
-      # 수급이 그날 것까지 확정됐는지(flow_last == date) 확인한다. 낮으면 텔레그램으로 알려 실행 시각을 조정할 수 있게 한다.
+      # 수급이 직전 거래일까지 들어왔는지(flow_last) 확인한다. 네이버는 당일 수급을 저녁 8시 이후에도 주지 않아 하루 늦은 것은 정상으로 본다.
       - name: Check flow freshness
         if: ${{ hashFiles('result/scan_snapshot.csv') != '' }}
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python - <<'PY'
-          import pandas as pd
-          from trader import notify
-          s = pd.read_csv("result/scan_snapshot.csv")
-          ok = int((s["flow_last"] == s["date"]).sum())
-          msg = f"훑기 스냅샷 {s['date'].max()}: 당일 수급 확정 {ok}/{len(s)}종목"
-          print(msg)
-          if ok < 0.8 * len(s):
-              notify.send("⚠️ " + msg + " — 네이버 수급이 아직 확정 전입니다. 이 날 훑기 스냅샷은 시험에서 제외됩니다.")
-          PY
+        run: python -m stock.flowcheck result/scan_snapshot.csv 훑기 스냅샷
 
       - name: Save scan snapshot
         if: ${{ hashFiles('result/scan_snapshot.csv') != '' }}

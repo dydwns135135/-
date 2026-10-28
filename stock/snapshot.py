@@ -32,6 +32,11 @@ def load_snapshots(path):
     return df.drop_duplicates(["date", "code"], keep="last").reset_index(drop=True)
 
 
+def flow_fresh(df):
+    """수급이 직전 거래일 이후까지 확인된 행(그날 수급이 있으면 더 좋고, 하루 늦은 것은 매일 똑같이 허용). 그보다 늦거나 없으면 제외."""
+    return pd.to_datetime(df["flow_last"], errors="coerce") >= df["prev_date"]
+
+
 def attach_returns(snap, market, horizons=HORIZONS):
     """스냅샷 날짜의 종가 대비 h거래일 뒤 수익률을 붙인다. 아직 h일이 지나지 않은 행은 빠진다."""
     rows = []
@@ -41,10 +46,11 @@ def attach_returns(snap, market, horizons=HORIZONS):
         c = market[code]["close"]
         pos = c.index.get_indexer(pd.to_datetime(g["date"]))
         for (_, r), p in zip(g.iterrows(), pos):
-            if p < 0 or p + max(horizons) >= len(c):
+            if p < 1 or p + max(horizons) >= len(c):
                 continue
             rec = r.to_dict()
             rec["date"] = pd.Timestamp(r["date"])
+            rec["prev_date"] = c.index[p - 1]  # 직전 거래일 — 수급이 여기까지 있으면 정상(당일 수급은 저녁에도 안 올라옴)
             for h in horizons:
                 rec[f"r{h}"] = c.iloc[p + h] / c.iloc[p] - 1
             rows.append(rec)
@@ -62,14 +68,15 @@ def evaluate(snap, market, horizons=HORIZONS):
         return (head + "\n이후 수익률이 확정된 날이 아직 부족합니다. " +
                 " / ".join(f"{h}일 기준 약 {need[h]}거래일 이상 필요" for h in horizons) + " — 더 쌓인 뒤 시험합니다.")
     d = df.dropna(subset=["flow_ratio"])
-    fresh = d[d["flow_last"].astype(str) == d["date"].dt.strftime("%Y-%m-%d")]  # 수급이 그날 것까지 확정된 행만
+    fresh = d[flow_fresh(d)]  # 수급이 직전 거래일까지 확인된 행만
     skipped = len(d) - len(fresh)
     d = fresh
     if d["date"].nunique() < 10:
-        return (head + f"\n당일 수급이 확정된 날이 아직 {d['date'].nunique()}일뿐입니다(수급이 하루 늦은 {skipped}건은 제외). "
+        return (head + f"\n수급이 직전 거래일까지 확인된 날이 아직 {d['date'].nunique()}일뿐입니다(이틀 이상 늦은 {skipped}건은 제외). "
                 "더 쌓인 뒤 시험합니다.")
-    lines = [head, f"수익률이 확정된 날 {df['date'].nunique()}일 · 수급이 그날 것까지 확정된 종목-일 {len(d)}건" +
-             (f" (하루 늦은 {skipped}건 제외)" if skipped else ""),
+    lines = [head, f"수익률이 확정된 날 {df['date'].nunique()}일 · 수급이 직전 거래일까지 확인된 종목-일 {len(d)}건" +
+             (f" (이틀 이상 늦은 {skipped}건 제외)" if skipped else ""),
+             "가격은 그날 종가, 수급은 직전 거래일까지로 매일 똑같이 정의(둘 다 그 시점에 알 수 있는 값)",
              "매일 수급 상위 3종목 − 그날 전체 평균 (겹치지 않게 5·10일 간격 표본)"]
     for key, label in (("flow_ratio", "수급 상위 3"), ("score", "점수 상위 3(수급 포함)")):
         lines.append(_rank_line(label, rank_test(d, key), horizons))
@@ -152,13 +159,14 @@ def evaluate_scan(snap, market, horizons=HORIZONS):
     min_days = min(horizons) * 10  # 겹치지 않는 표본 10개가 나오는 최소 일수
     if df.empty or df["date"].nunique() < min_days:
         return head + f"\n이후 수익률이 확정된 날이 {0 if df.empty else df['date'].nunique()}일뿐이라 아직 부족합니다. {need} 이상 필요 — 더 쌓인 뒤 시험합니다."
-    fresh = df["flow_last"].astype(str) == df["date"].dt.strftime("%Y-%m-%d")  # 수급이 그날 것까지 확정된 날만
+    fresh = flow_fresh(df)  # 수급이 직전 거래일까지 확인된 행만
     skipped = int((~fresh).sum())
     d = df[fresh].copy()
     if d["date"].nunique() < min_days:
-        return head + f"\n당일 수급이 확정된 날이 아직 {d['date'].nunique()}일뿐입니다(하루 늦은 {skipped}건 제외). 더 쌓인 뒤 시험합니다."
+        return head + f"\n수급이 직전 거래일까지 확인된 날이 아직 {d['date'].nunique()}일뿐입니다(이틀 이상 늦은 {skipped}건 제외). 더 쌓인 뒤 시험합니다."
     d["stage"] = d["stage"].astype(str).str.split("(").str[0]
-    lines = [head, f"수익률이 확정된 날 {d['date'].nunique()}일 · 종목-일 {len(d):,}건" + (f" (수급이 하루 늦은 {skipped}건 제외)" if skipped else ""),
+    lines = [head, f"수익률이 확정된 날 {d['date'].nunique()}일 · 종목-일 {len(d):,}건" + (f" (수급이 이틀 이상 늦은 {skipped}건 제외)" if skipped else ""),
+             "가격은 그날 종가, 수급은 직전 거래일까지로 매일 똑같이 정의(둘 다 그 시점에 알 수 있는 값)",
              "그날 훑은 전체 평균과의 차이 (겹치지 않게 5·10일 간격 표본)"]
     for key, label in (("score", "점수 상위 3"), ("theme_score", "테마점수 상위 3")):
         lines.append(_rank_line(label, rank_test(d, key), horizons))
