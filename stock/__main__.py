@@ -95,6 +95,9 @@ def run(a):
         from stock.backtest import collect, format_report
         print(format_report(collect(market, themes_map)))
         return
+    if not us:  # 수급은 직전 거래일까지로 통일(저장·시험과 같은 정의). 네이버가 당일 수급을 종목별로 순차 공개해 날짜가 섞이기 때문
+        from stock.snapshot import lag_flow
+        market = lag_flow(market)
     if market[idx_key].attrs.get("proxy"):
         idx_name = "받은 종목 평균(S&P500 대용)"
     reg = market_regime(market[idx_key])
@@ -123,7 +126,7 @@ def run(a):
     if us:
         print("[수급] 미국은 투자자별 수급 데이터가 없어 가격·거래량·차트만으로 분석")
     else:
-        print(f"[수급 반영] {n_flow}/{len(stocks)}종목" + ("" if n_flow else "  ※ 수급 없이 가격·거래량만으로 분석됨"))
+        print(f"[수급 반영] {n_flow}/{len(stocks)}종목" + (" (가격은 오늘 종가, 수급은 직전 거래일까지)" if n_flow else "  ※ 수급 없이 가격·거래량만으로 분석됨"))
     print("\n[테마 순위]" + (" (상위 10개)" if scan_stats else ""))
     for i, r in (themes.head(10) if scan_stats else themes).iterrows():
         print(f"{i+1}. {r['theme']:<10} 점수 {r['score']:5.1f} | 강세종목비율 {r['breadth']:.0%} | "
@@ -165,16 +168,13 @@ def run(a):
         os.makedirs(a.out, exist_ok=True)
         themes.to_csv(os.path.join(a.out, "themes.csv"), index=False, encoding="utf-8-sig")
         stocks.to_csv(os.path.join(a.out, "stocks.csv"), index=False, encoding="utf-8-sig")
-        if scan_stats or not us:
-            # 저장용 스냅샷은 수급을 직전 거래일까지로 통일해 다시 분석한다(리포트에 보낸 값과 수급 정의만 다르다)
-            from stock.snapshot import build_scan_snapshot, build_snapshot, lag_flow
-            mk = lag_flow(market)
-            th_s, st_s = analyze_themes(mk, themes_map)
-            if scan_stats:  # 훑기 결과는 소속 테마와 함께 매일 저장해 둔다(워크플로가 stock-data 브랜치의 scan/ 에 보관)
-                build_scan_snapshot(st_s, th_s, mk).to_csv(os.path.join(a.out, "scan_snapshot.csv"), index=False, encoding="utf-8-sig")
-                th_s.to_csv(os.path.join(a.out, "scan_themes.csv"), index=False, encoding="utf-8-sig")
-            else:  # 한국 수급은 과거 이력을 구할 수 없어 매일 저장해 둔다(워크플로가 stock-data 브랜치의 kr/ 에 보관)
-                build_snapshot(st_s, mk).to_csv(os.path.join(a.out, "snapshot.csv"), index=False, encoding="utf-8-sig")
+        if scan_stats:  # 훑기 결과는 소속 테마와 함께 매일 저장해 둔다(워크플로가 stock-data 브랜치의 scan/ 에 보관)
+            from stock.snapshot import build_scan_snapshot
+            build_scan_snapshot(stocks_all, themes, market).to_csv(os.path.join(a.out, "scan_snapshot.csv"), index=False, encoding="utf-8-sig")
+            themes.to_csv(os.path.join(a.out, "scan_themes.csv"), index=False, encoding="utf-8-sig")
+        elif not us:  # 한국 수급은 과거 이력을 구할 수 없어 매일 저장해 둔다(워크플로가 stock-data 브랜치의 kr/ 에 보관)
+            from stock.snapshot import build_snapshot
+            build_snapshot(stocks, market).to_csv(os.path.join(a.out, "snapshot.csv"), index=False, encoding="utf-8-sig")
 
 if __name__ == "__main__":
     main()
