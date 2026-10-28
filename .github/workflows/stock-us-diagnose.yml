@@ -1,0 +1,17 @@
+name: "stock-us-diagnose (미국 데이터 출처 진단)"
+
+# 미국 일봉 데이터를 받을 수 있는 주소를 한 번에 점검해 로그에 출력한다. 수동 실행 전용, 주문·알림 없음.
+on:
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests
+      - run: python -m stock.diag_us
