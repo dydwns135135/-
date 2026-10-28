@@ -1,11 +1,14 @@
 """사용: python -m stock --demo | --pykrx | --csv 폴더   (결과 CSV: --out 폴더)"""
 import argparse
+import contextlib
+import io
 import os
 
 from stock.analyze import analyze_themes, decide, market_regime
 from stock.dart import fetch_summaries
 from stock.data import load_csv_dir, load_pykrx, synthetic_market
 from stock.themes import THEMES
+from trader import notify
 
 DISCLAIMER = "※ 참고용 분석이며 투자 권유가 아닙니다. 손절 기준을 먼저 정하고, 과열 종목은 추격하지 마세요."
 
@@ -18,8 +21,24 @@ def main(argv=None):
     g.add_argument("--csv", metavar="DIR", help="<코드>.csv 폴더")
     ap.add_argument("--top", type=int, default=5, help="종목 표시 개수")
     ap.add_argument("--dart", action="store_true", help="DART 공시 확인(환경변수 DART_API_KEY 필요)")
+    ap.add_argument("--telegram", action="store_true", help="결과를 텔레그램으로 전송(TELEGRAM_BOT_TOKEN/CHAT_ID)")
     ap.add_argument("--out", help="결과 CSV 저장 폴더")
     a = ap.parse_args(argv)
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            run(a)
+    except Exception as e:  # 실패도 알려서 조용히 멈추지 않게
+        print(buf.getvalue())
+        if a.telegram:
+            notify.send(f"❌ 종목 분석기 오류: {type(e).__name__}: {str(e)[:200]}")
+        raise
+    print(buf.getvalue())
+    if a.telegram:
+        notify.send("📈 오늘의 종목 분석\n" + buf.getvalue())
+
+
+def run(a):
 
     if a.demo:
         market = synthetic_market()
