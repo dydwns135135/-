@@ -213,3 +213,16 @@ def test_load_us_uses_proxy_index_and_aborts_early(monkeypatch):
     monkeypatch.setattr(y, "fetch", always_fail)
     with pytest.raises(RuntimeError, match="미국 데이터를 받지 못함"):
         y.load_yahoo(["A", "B", "C", "D", "E"], log=lambda m: None)
+
+
+def test_report_marks_missing_and_proxy(capsys, monkeypatch):
+    import stock.__main__ as m
+    from stock.data import synthetic_market
+    from stock.us_themes import US_THEMES
+    mk = synthetic_market(themes=US_THEMES, index="SPX", flow=False)
+    del mk["LMT"], mk["RTX"]  # 방산·우주 일부 누락
+    mk["SPX"].attrs["proxy"] = True
+    monkeypatch.setattr(m, "synthetic_market", lambda *a, **k: mk)
+    m.main(["--demo", "--us"])
+    out = capsys.readouterr().out
+    assert "[수집] 21/23종목 — 누락: LMT, RTX" in out and "⚠️종목 3/5" in out and "S&P500 대용" in out

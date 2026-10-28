@@ -118,7 +118,7 @@ def analyze_themes(market, themes):
         vgrow = v5 / vp - 1 if vp else 0
         tscore = top3 * 0.6 + breadth * 100 * 0.25 + float(np.clip(vgrow / 1.0, 0, 1)) * 100 * 0.15
         leader = max(res.values(), key=lambda r: r["score"])
-        rows.append({"theme": theme, "score": round(tscore, 1), "breadth": breadth, "value_growth": vgrow,
+        rows.append({"theme": theme, "n": len(res), "total": len(members), "score": round(tscore, 1), "breadth": breadth, "value_growth": vgrow,
                      "leader": leader["name"], "leader_score": leader["score"], "leader_stage": leader["stage"]})
     t = pd.DataFrame(rows).sort_values("score", ascending=False).reset_index(drop=True)
     s = pd.DataFrame(stocks).sort_values("score", ascending=False).reset_index(drop=True)
