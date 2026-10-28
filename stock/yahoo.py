@@ -66,34 +66,62 @@ def fetch_stooq(sym):
     return parse_stooq(r.text)
 
 
-def parse_naver_us(rows):
-    """네이버 해외 일봉 JSON(list) → DataFrame. 필드: localDate, openPrice, highPrice, lowPrice, closePrice, accumulatedTradingVolume."""
+def _find_rows(j):
+    """JSON 어디에 있든 localDate 가 든 dict 목록을 찾아 돌려준다(응답 구조가 달라도 견디기 위함)."""
+    if isinstance(j, list):
+        if any(isinstance(d, dict) and "localDate" in d for d in j):
+            return j
+        for x in j:
+            r = _find_rows(x)
+            if r:
+                return r
+    elif isinstance(j, dict):
+        for v in j.values():
+            r = _find_rows(v)
+            if r:
+                return r
+    return None
+
+
+def parse_naver_us(j):
+    """네이버 해외 일봉 JSON → DataFrame. 필드: localDate, openPrice, highPrice, lowPrice, closePrice, accumulatedTradingVolume."""
     recs = {}
-    for d in rows:
+    for d in _find_rows(j) or []:
         try:
             recs[pd.Timestamp(str(d["localDate"]))] = [float(d[k]) for k in
                 ("openPrice", "highPrice", "lowPrice", "closePrice", "accumulatedTradingVolume")]
         except (KeyError, ValueError, TypeError):
             continue
     if not recs:
-        raise ValueError("네이버 해외 응답에 데이터 없음")
+        raise ValueError("네이버 해외 응답에 일봉 없음")
     return pd.DataFrame(recs, index=["open", "high", "low", "close", "volume"]).T.sort_index().tail(260)
 
 
+def _naver_urls(code, p):
+    """후보 주소(응답 형식이 달라도 _find_rows 가 읽는다)."""
+    yield f"https://api.stock.naver.com/chart/foreign/item/{code}/day", p
+    yield "https://m.stock.naver.com/front-api/chart/pricesByPeriod", {
+        "reutersCode": code, "category": "stock", "chartInfoType": "stock", "scriptChartType": "day"}
+
+
 def fetch_naver_us(sym):
-    """네이버 해외주식 일봉. 거래소 접미사(.O 나스닥, .N 뉴욕, .K 아카)를 차례로 시도한다."""
+    """네이버 해외주식 일봉. 거래소 접미사(.O 나스닥, .N 뉴욕, .K 아카)와 후보 주소를 차례로 시도한다."""
     end = pd.Timestamp.today().normalize()
     p = {"startDateTime": (end - pd.Timedelta(days=420)).strftime("%Y%m%d0000"), "endDateTime": end.strftime("%Y%m%d2359")}
     errs = []
     for suf in ((".O", ".N", ".K") if "." not in sym else ("",)):
-        try:
-            r = requests.get(f"https://api.stock.naver.com/chart/foreign/item/{sym}{suf}/day", params=p,
-                             headers=HEAD, timeout=15)
-            r.raise_for_status()
-            return parse_naver_us(r.json())
-        except Exception as e:
-            errs.append(f"{suf or '-'}:{type(e).__name__}")
-    raise RuntimeError("네이버 " + ",".join(errs))
+        for k, (url, params) in enumerate(_naver_urls(sym + suf, p)):
+            tag = f"{suf or '-'}#{k + 1}"
+            try:
+                r = requests.get(url, params=params, headers=HEAD, timeout=15)
+                if r.status_code >= 400:
+                    errs.append(f"{tag} HTTP{r.status_code}")
+                    continue
+                return parse_naver_us(r.json())
+            except Exception as e:
+                body = locals().get("r")
+                errs.append(f"{tag} {type(e).__name__}" + (f" '{' '.join(body.text.split())[:50]}'" if body is not None else ""))
+    raise RuntimeError("네이버 " + "; ".join(errs))
 
 
 def fetch(sym, days="1y", log=print):
@@ -103,7 +131,7 @@ def fetch(sym, days="1y", log=print):
         try:
             return fetch_naver_us(sym)
         except Exception as e:
-            errs.append(str(e)[:80])
+            errs.append(str(e)[:400])
     try:
         df = fetch_yahoo(sym, days, tries=2)
         if errs:
@@ -122,15 +150,18 @@ def fetch(sym, days="1y", log=print):
 
 def load_yahoo(tickers, delay=0.8, log=print):
     try:
-        idx = fetch("SPY", log=log)  # S&P500 ETF를 시황 지수로 사용(네이버에서 받을 수 있음)
-    except Exception:
-        idx = fetch("^GSPC", log=log)
+        idx = fetch("SPY", log=log)  # S&P500 ETF를 시황 지수로 사용
+    except Exception as e1:
+        try:
+            idx = fetch("^GSPC", log=log)
+        except Exception as e2:
+            raise RuntimeError(f"S&P500 데이터를 받지 못함 — SPY: {e1} | ^GSPC: {e2}")
     out = {"SPX": idx[["close", "volume"]]}
     for t in tickers:
         try:
             out[t] = fetch(t, log=log)
         except Exception as e:
-            log(f"일봉 실패 {t}: {str(e)[:150]}")
+            log(f"일봉 실패 {t}: {str(e)[:300]}")
         time.sleep(delay)
     if len(out) < 3:
         raise RuntimeError("미국 종목 데이터를 받지 못함")
