@@ -45,14 +45,17 @@ def load_pykrx(codes, days=250, index_code="1001"):
     return out
 
 
-def synthetic_market(n=260, seed=7):
+def synthetic_market(n=260, seed=7, themes=None, index="KOSPI", flow=True):
     """데모용 합성 시장. HBM=상승 초입(수급 유입), 2차전지=이미 급등(과열), 나머지=횡보/약세."""
     rng = np.random.default_rng(seed)
     idx = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=n)
-    plan = {"HBM": (0.0035, 0.0), "반도체 전공정": (0.0015, 0.0), "2차전지": (0.0, 1.0),
-            "방산": (0.0003, 0.0), "바이오": (-0.0006, 0.0)}
+    themes = themes or THEMES
+    kr = {"HBM": (0.0035, 0.0), "반도체 전공정": (0.0015, 0.0), "2차전지": (0.0, 1.0),
+          "방산": (0.0003, 0.0), "바이오": (-0.0006, 0.0)}
+    seq = [(0.0035, 0.0), (0.0015, 0.0), (0.0, 1.0), (0.0003, 0.0), (-0.0006, 0.0)]  # 초입·초입·과열·횡보·약세
+    plan = kr if themes is THEMES else {t: seq[i % len(seq)] for i, t in enumerate(themes)}
     out = {}
-    for theme, members in THEMES.items():
+    for theme, members in themes.items():
         drift, hot = plan[theme]
         theme_noise = rng.normal(0, 0.008, n)
         for j, code in enumerate(members):
@@ -74,11 +77,13 @@ def synthetic_market(n=260, seed=7):
             if ramp and not hot:
                 v[-4:] *= 2.2  # 거래량 터지기 시작
             val = c * v
-            flow = rng.normal(0, 0.01, n) * val
+            fl = rng.normal(0, 0.01, n) * val
             if ramp:
-                flow[n - k:] += 0.06 * val[n - k:]
-            out[code] = pd.DataFrame({"open": o, "high": h, "low": l, "close": c, "volume": v,
-                                      "foreign": flow * 0.6, "inst": flow * 0.4, "individual": -flow}, index=idx)
+                fl[n - k:] += 0.06 * val[n - k:]
+            df = pd.DataFrame({"open": o, "high": h, "low": l, "close": c, "volume": v}, index=idx)
+            if flow:
+                df["foreign"], df["inst"], df["individual"] = fl * 0.6, fl * 0.4, -fl
+            out[code] = df
     m = 2500 * np.cumprod(1 + rng.normal(0.0005, 0.008, n))
-    out["KOSPI"] = pd.DataFrame({"close": m, "volume": rng.integers(3e8, 5e8, n).astype(float)}, index=idx)
+    out[index] = pd.DataFrame({"close": m, "volume": rng.integers(3e8, 5e8, n).astype(float)}, index=idx)
     return out

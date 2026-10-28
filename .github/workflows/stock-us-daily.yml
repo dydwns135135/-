@@ -1,0 +1,43 @@
+name: "stock-us-daily (미국 주식 종목 분석 → 텔레그램)"
+
+# 미국 장 마감 후 시황·테마·선점 후보를 분석해 텔레그램으로 보낸다. 주문은 하지 않는다.
+# 스케줄은 저장소 변수 STOCK_ENABLED=true 일 때만 동작(한국 분석과 같은 스위치, 수동 실행은 항상 가능).
+# 텔레그램: 기존 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 시크릿 사용. 미국은 수급·공시 데이터가 없어 DART는 쓰지 않는다.
+on:
+  schedule:
+    - cron: "0 22 * * 1-5"   # UTC 22:00 = 한국 다음날 07:00 (미국 월~금 장 마감 후, 서머타임 여부와 무관하게 마감 뒤)
+  workflow_dispatch:
+    inputs:
+      demo:
+        description: "합성 데이터로 시험(실데이터 대신)"
+        type: boolean
+        default: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-stock.txt
+      - run: pip install -r requirements-stock.txt
+
+      - name: Analyze
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ENABLED: ${{ vars.STOCK_ENABLED }}
+          DEMO: ${{ inputs.demo }}
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$ENABLED" != "true" ]; then echo "STOCK_ENABLED!=true, 건너뜀"; exit 0; fi
+          SRC="--yahoo"; if [ "$DEMO" = "true" ]; then SRC="--demo --us"; fi
+          python -m stock $SRC --telegram --out result
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stock-us-result
+          path: result/

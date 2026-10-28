@@ -97,3 +97,20 @@ def test_lean_labels():
     assert dn[0] == "하락 우세" and dn[1] == -6
     assert lean(True, False, True, 0.0, 1.0, False, False, False)[0] == "중립"
     assert lean(True, True, True, 0.3, 2.0, True, False, True)[0].startswith("상승 흐름(과열")
+
+
+def test_yahoo_parser_and_us_demo(capsys):
+    from stock.__main__ import main
+    from stock.yahoo import parse_chart as yparse
+    data = {"chart": {"result": [{"meta": {"gmtoffset": -14400},
+                                  "timestamp": [1761660600, 1761747000, 1761833400],
+                                  "indicators": {"quote": [{"open": [1, 2, None], "high": [2, 3, None], "low": [1, 1, None],
+                                                            "close": [2, 3, None], "volume": [10, 20, None]}]}}]}}
+    df = yparse(data)
+    assert len(df) == 2 and df["close"].iloc[-1] == 3  # 값이 비는 날은 제외
+    import pytest
+    with pytest.raises(Exception):
+        yparse({"chart": {"result": [{"timestamp": [1], "indicators": {"quote": [{"open": [None], "high": [None], "low": [None], "close": [None], "volume": [None]}]}}]}})
+    main(["--demo", "--us"])
+    out = capsys.readouterr().out
+    assert "S&P500" in out and "엔비디아" in out and "미국은 투자자별 수급" in out

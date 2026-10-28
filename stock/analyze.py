@@ -125,7 +125,7 @@ def analyze_themes(market, themes):
     return t, s
 
 
-def decide(row, regime, disclosure=None):
+def decide(row, regime, disclosure=None, kr=True):
     """대응 방향: 즉시 진입 / 분할 진입 / 관망(패스) + 사유. disclosure=dart.summarize 결과(없으면 미확인)."""
     why = []
     if row["stage"].startswith("과열"):
@@ -135,11 +135,15 @@ def decide(row, regime, disclosure=None):
     if row["stage"] == "관망":
         return "관망(패스)", ["점수 부족"]
     level = 2 if (row["score"] >= 75 and row["ret20"] < 0.12 and row["both_buy"]) else 1
+    if not kr:
+        level = 1  # 미국: 수급·공시 정보가 없어 분할 진입까지만
     why.append(f"점수 {row['score']}" + (", 외국인·기관 동반 순매수" if row["both_buy"] else ""))
     if row["stage"] != "선점 후보":
         level = min(level, 1)
         why.append("이미 상승 진행 중 → 눌림 때만")
-    if disclosure is None:
+    if not kr:
+        why.append("미국: 수급·공시 미반영 → 분할 진입까지만")
+    elif disclosure is None:
         level = min(level, 1)
         why.append("공시 미확인(--dart 로 확인 전엔 분할 진입까지만)")
     elif disclosure["positive"]:
