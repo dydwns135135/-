@@ -108,7 +108,7 @@ def _naver_urls(code, end):
         "reutersCode": code, "category": "stock", "chartInfoType": "stock", "scriptChartType": "day"}
 
 
-NAVER_SUFFIXES = (".O", ".N", ".P", ".A", ".K")  # 나스닥, 뉴욕, 아카, 아멕스, ETF
+NAVER_SUFFIXES = (".O", ".N", ".P", ".A", ".K", "")  # 나스닥, 뉴욕, 아카, 아멕스, ETF, 접미사 없음
 
 
 def fetch_naver_us(sym):
@@ -129,6 +129,7 @@ def fetch_naver_us(sym):
                 continue
             df = parse_naver_us(r.json())
             _NAVER_OK[:] = [k]
+            NAVER_HIT[sym] = f"{suf or '-'}#{k + 1}"
             return df
         except Exception as e:
             errs.append(f"{tag} {type(e).__name__}" + (f" '{' '.join(r.text.split())[:40]}'" if r is not None else ""))
@@ -136,6 +137,7 @@ def fetch_naver_us(sym):
 
 
 _NAVER_OK = []
+NAVER_HIT = {}  # 종목 → 성공한 접미사#후보번호(진단용)
 
 
 def fetch(sym, days="1y", log=print):
@@ -166,7 +168,9 @@ def proxy_index(frames):
     """지수를 못 받을 때: 받은 종목들을 첫 값 기준 100으로 맞춰 평균낸 대용 지수."""
     close = pd.concat([d["close"] / d["close"].iloc[0] * 100 for d in frames], axis=1).ffill().mean(axis=1)
     vol = pd.concat([d["volume"] for d in frames], axis=1).fillna(0).sum(axis=1)
-    return pd.DataFrame({"close": close, "volume": vol})
+    df = pd.DataFrame({"close": close, "volume": vol})
+    df.attrs["proxy"] = True
+    return df
 
 
 def load_yahoo(tickers, delay=0.8, log=print):
@@ -193,4 +197,7 @@ def load_yahoo(tickers, delay=0.8, log=print):
         idx = proxy_index(list(out.values()))
         log("S&P500 대신 받은 종목들의 평균을 시황 지수로 사용")
     out["SPX"] = idx[["close", "volume"]]
+    out["SPX"].attrs["proxy"] = bool(idx.attrs.get("proxy"))
+    if NAVER_HIT:
+        log("네이버 성공: " + ", ".join(f"{k}{v}" for k, v in NAVER_HIT.items()))
     return out

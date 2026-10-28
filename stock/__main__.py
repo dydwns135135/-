@@ -60,12 +60,18 @@ def run(a):
     else:
         market = load_csv_dir(a.csv)
 
+    if market[idx_key].attrs.get("proxy"):
+        idx_name = "받은 종목 평균(S&P500 대용)"
     reg = market_regime(market[idx_key])
     themes, stocks = analyze_themes(market, themes_map)
 
     print(f"[시황] {reg['label']}  ({idx_name} 20일 {reg['ret20']:+.1%})")
     if reg["points"] <= 1:
         print("  → 지수가 약하면 신규 진입 비중을 줄이세요.")
+    expected = [c for m in themes_map.values() for c in m]
+    missing = [c for c in expected if c not in set(stocks["code"])]
+    if missing:
+        print(f"[수집] {len(expected) - len(missing)}/{len(expected)}종목 — 누락: {', '.join(missing)} (누락 종목이 있는 테마는 점수가 부정확)")
     n_flow = int(stocks["flow_ratio"].notna().sum())
     if us:
         print("[수급] 미국은 투자자별 수급 데이터가 없어 가격·거래량·차트만으로 분석")
@@ -74,7 +80,8 @@ def run(a):
     print("\n[테마 순위]")
     for i, r in themes.iterrows():
         print(f"{i+1}. {r['theme']:<10} 점수 {r['score']:5.1f} | 강세종목비율 {r['breadth']:.0%} | "
-              f"거래대금 {r['value_growth']:+.0%} | 대장 {r['leader']} ({r['leader_stage']})")
+              f"거래대금 {r['value_growth']:+.0%} | 대장 {r['leader']} ({r['leader_stage']})"
+              + (f" | ⚠️종목 {r['n']}/{r['total']}" if r["n"] < r["total"] else ""))
     print("\n[선점 후보] 점수 높고 아직 안 오른 종목")
     picks = stocks[stocks["stage"] == "선점 후보"].head(a.top)
     disc = fetch_summaries(list(picks["code"])) if a.dart and not us else {}
