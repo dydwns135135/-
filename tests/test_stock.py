@@ -186,4 +186,30 @@ def test_naver_us_parses_nested_json_and_reports_errors(monkeypatch):
     with pytest.raises(RuntimeError) as e:
         y.fetch_naver_us("NVDA")
     msg = str(e.value)
-    assert ".O#1 HTTP404" in msg and ".K#2 HTTP404" in msg  # 어느 후보가 어떤 이유로 실패했는지 남는다
+    assert ".O#1 HTTP404" in msg and ".K#4 HTTP404" in msg  # 어느 후보가 어떤 이유로 실패했는지 남는다
+
+
+def test_load_us_uses_proxy_index_and_aborts_early(monkeypatch):
+    import pandas as pd
+    import pytest
+    import stock.yahoo as y
+    monkeypatch.setattr(y.time, "sleep", lambda s: None)
+    days = pd.bdate_range("2026-07-01", periods=80)
+    def mk(base):
+        c = pd.Series(range(80), index=days, dtype=float) + base
+        return pd.DataFrame({"open": c, "high": c, "low": c, "close": c, "volume": 100.0})
+    def fake(sym, days="1y", log=print):
+        if sym in ("SPY", "QQQ"):
+            raise RuntimeError("지수 없음")
+        return mk(100 if sym == "AAA" else 200)
+    monkeypatch.setattr(y, "fetch", fake)
+    logs = []
+    out = y.load_yahoo(["AAA", "BBB"], log=logs.append)
+    assert set(out) == {"AAA", "BBB", "SPX"} and any("평균" in m for m in logs)
+    assert out["SPX"]["close"].iloc[0] == pytest.approx(100.0)
+
+    def always_fail(sym, days="1y", log=print):
+        raise RuntimeError("막힘")
+    monkeypatch.setattr(y, "fetch", always_fail)
+    with pytest.raises(RuntimeError, match="미국 데이터를 받지 못함"):
+        y.load_yahoo(["A", "B", "C", "D", "E"], log=lambda m: None)

@@ -97,31 +97,45 @@ def parse_naver_us(j):
     return pd.DataFrame(recs, index=["open", "high", "low", "close", "volume"]).T.sort_index().tail(260)
 
 
-def _naver_urls(code, p):
-    """후보 주소(응답 형식이 달라도 _find_rows 가 읽는다)."""
-    yield f"https://api.stock.naver.com/chart/foreign/item/{code}/day", p
+def _naver_urls(code, end):
+    """후보 주소(응답 형식이 달라도 _find_rows 가 읽는다). 날짜 형식이 확실하지 않아 변형을 모두 시도한다."""
+    base = f"https://api.stock.naver.com/chart/foreign/item/{code}/day"
+    st = end - pd.Timedelta(days=420)
+    yield base, {"startDateTime": st.strftime("%Y%m%d0000"), "endDateTime": end.strftime("%Y%m%d2359")}
+    yield base, {"startDateTime": st.strftime("%Y%m%d000000"), "endDateTime": end.strftime("%Y%m%d235959")}
+    yield base, {}
     yield "https://m.stock.naver.com/front-api/chart/pricesByPeriod", {
         "reutersCode": code, "category": "stock", "chartInfoType": "stock", "scriptChartType": "day"}
 
 
+NAVER_SUFFIXES = (".O", ".N", ".P", ".A", ".K")  # 나스닥, 뉴욕, 아카, 아멕스, ETF
+
+
 def fetch_naver_us(sym):
-    """네이버 해외주식 일봉. 거래소 접미사(.O 나스닥, .N 뉴욕, .K 아카)와 후보 주소를 차례로 시도한다."""
+    """네이버 해외주식 일봉. 거래소 접미사와 후보 주소를 차례로 시도하고, 성공한 조합을 기억해 다음 종목에서 먼저 쓴다."""
     end = pd.Timestamp.today().normalize()
-    p = {"startDateTime": (end - pd.Timedelta(days=420)).strftime("%Y%m%d0000"), "endDateTime": end.strftime("%Y%m%d2359")}
     errs = []
-    for suf in ((".O", ".N", ".K") if "." not in sym else ("",)):
-        for k, (url, params) in enumerate(_naver_urls(sym + suf, p)):
-            tag = f"{suf or '-'}#{k + 1}"
-            try:
-                r = requests.get(url, params=params, headers=HEAD, timeout=15)
-                if r.status_code >= 400:
-                    errs.append(f"{tag} HTTP{r.status_code}")
-                    continue
-                return parse_naver_us(r.json())
-            except Exception as e:
-                body = locals().get("r")
-                errs.append(f"{tag} {type(e).__name__}" + (f" '{' '.join(body.text.split())[:50]}'" if body is not None else ""))
+    combos = [(suf, k) for suf in (NAVER_SUFFIXES if "." not in sym else ("",)) for k in range(4)]
+    if _NAVER_OK:  # 앞서 성공한 후보 주소 번호를 먼저
+        combos.sort(key=lambda c: c[1] != _NAVER_OK[0])
+    for suf, k in combos:
+        url, params = list(_naver_urls(sym + suf, end))[k]
+        tag = f"{suf or '-'}#{k + 1}"
+        r = None
+        try:
+            r = requests.get(url, params=params, headers=HEAD, timeout=15)
+            if r.status_code >= 400:
+                errs.append(f"{tag} HTTP{r.status_code}")
+                continue
+            df = parse_naver_us(r.json())
+            _NAVER_OK[:] = [k]
+            return df
+        except Exception as e:
+            errs.append(f"{tag} {type(e).__name__}" + (f" '{' '.join(r.text.split())[:40]}'" if r is not None else ""))
     raise RuntimeError("네이버 " + "; ".join(errs))
+
+
+_NAVER_OK = []
 
 
 def fetch(sym, days="1y", log=print):
@@ -148,21 +162,35 @@ def fetch(sym, days="1y", log=print):
     raise RuntimeError(" / ".join(errs))
 
 
+def proxy_index(frames):
+    """지수를 못 받을 때: 받은 종목들을 첫 값 기준 100으로 맞춰 평균낸 대용 지수."""
+    close = pd.concat([d["close"] / d["close"].iloc[0] * 100 for d in frames], axis=1).ffill().mean(axis=1)
+    vol = pd.concat([d["volume"] for d in frames], axis=1).fillna(0).sum(axis=1)
+    return pd.DataFrame({"close": close, "volume": vol})
+
+
 def load_yahoo(tickers, delay=0.8, log=print):
-    try:
-        idx = fetch("SPY", log=log)  # S&P500 ETF를 시황 지수로 사용
-    except Exception as e1:
-        try:
-            idx = fetch("^GSPC", log=log)
-        except Exception as e2:
-            raise RuntimeError(f"S&P500 데이터를 받지 못함 — SPY: {e1} | ^GSPC: {e2}")
-    out = {"SPX": idx[["close", "volume"]]}
+    out, errs = {}, []
     for t in tickers:
         try:
             out[t] = fetch(t, log=log)
         except Exception as e:
-            log(f"일봉 실패 {t}: {str(e)[:300]}")
+            errs.append(f"{t}: {str(e)[:300]}")
+            log(f"일봉 실패 {errs[-1]}")
+            if not out and len(errs) >= 3:  # 처음 3개가 모두 실패하면 중단(출처 전체가 막힌 것)
+                raise RuntimeError("미국 데이터를 받지 못함 — " + " | ".join(errs))
         time.sleep(delay)
-    if len(out) < 3:
-        raise RuntimeError("미국 종목 데이터를 받지 못함")
+    if len(out) < 2:
+        raise RuntimeError("미국 종목 데이터를 받지 못함 — " + " | ".join(errs[:3]))
+    idx = None
+    for ref in ("SPY", "QQQ"):
+        try:
+            idx = fetch(ref, log=log)
+            break
+        except Exception as e:
+            log(f"지수 {ref} 실패: {str(e)[:150]}")
+    if idx is None:
+        idx = proxy_index(list(out.values()))
+        log("S&P500 대신 받은 종목들의 평균을 시황 지수로 사용")
+    out["SPX"] = idx[["close", "volume"]]
     return out
