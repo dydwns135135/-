@@ -114,3 +114,37 @@ def test_yahoo_parser_and_us_demo(capsys):
     main(["--demo", "--us"])
     out = capsys.readouterr().out
     assert "S&P500" in out and "엔비디아" in out and "미국은 투자자별 수급" in out
+
+
+def test_yahoo_retry_and_stooq_fallback(monkeypatch):
+    import pytest
+    import stock.yahoo as y
+
+    class R:
+        def __init__(self, code, body="", js=None):
+            self.status_code, self.text, self._js = code, body, js
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise y.requests.HTTPError(str(self.status_code))
+        def json(self):
+            return self._js
+
+    chart = {"chart": {"result": [{"meta": {}, "timestamp": [1761660600, 1761747000],
+                                   "indicators": {"quote": [{"open": [1, 2], "high": [2, 3], "low": [1, 1], "close": [2, 3], "volume": [10, 20]}]}}]}}
+    calls = []
+    def fake_get(url, **kw):
+        calls.append(url)
+        return R(429) if len(calls) < 3 else R(200, js=chart)
+    monkeypatch.setattr(y.requests, "get", fake_get)
+    df = y.fetch_yahoo("NVDA", sleep=lambda s: None)
+    assert len(df) == 2 and "query2" in calls[1]  # 429 → 다른 호스트로 재시도
+
+    csv = "Date,Open,High,Low,Close,Volume\n2026-10-27,1,2,1,2,10\n2026-10-28,2,3,1,3,20\n"
+    def fake_get2(url, **kw):
+        return R(429) if "yahoo" in url else R(200, body=csv)
+    monkeypatch.setattr(y.requests, "get", fake_get2)
+    monkeypatch.setattr(y, "fetch_yahoo", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("야후 실패(HTTP 429)")))
+    logs = []
+    assert y.fetch("NVDA", log=logs.append)["close"].iloc[-1] == 3 and "Stooq" in logs[0]
+    with pytest.raises(ValueError):
+        y.parse_stooq("No data")
