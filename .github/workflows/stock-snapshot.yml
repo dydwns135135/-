@@ -1,0 +1,70 @@
+name: "stock-snapshot (한국 수급 스냅샷 저장, 텔레그램 리포트 없음)"
+
+# 장 마감 직후(16:30)에는 네이버에 당일 외국인·기관 수급이 아직 올라오지 않아 하루 늦은 값이 저장된다.
+# 그래서 수급이 확정된 뒤인 한국시간 19:30에 한 번 더 분석해 stock-data 브랜치에 날짜별 CSV로 쌓는다.
+# 쌓인 스냅샷은 매주 토요일 stock-backtest 의 '수급 버전 시험'에 쓰인다. 주문·일일 리포트와 무관하다.
+# 스케줄은 저장소 변수 STOCK_ENABLED=true 일 때만 동작(수동 실행은 항상 가능).
+on:
+  schedule:
+    - cron: "30 10 * * 1-5"   # UTC 10:30 = 한국 19:30 (월~금)
+  workflow_dispatch:
+
+permissions:
+  contents: write   # stock-data 브랜치에만 커밋한다(코드 브랜치는 건드리지 않음)
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-stock.txt
+      - run: pip install -r requirements-stock.txt
+
+      - name: Analyze
+        env:
+          ENABLED: ${{ vars.STOCK_ENABLED }}
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$ENABLED" != "true" ]; then echo "STOCK_ENABLED!=true, 건너뜀"; exit 0; fi
+          python -m stock --naver --out result
+
+      # 수급이 그날 것까지 확정됐는지 확인한다(flow_last == date 인 종목 비율). 낮으면 텔레그램으로 알려 실행 시각을 조정할 수 있게 한다.
+      - name: Check flow freshness
+        if: ${{ hashFiles('result/snapshot.csv') != '' }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python - <<'PY'
+          import pandas as pd
+          from trader import notify
+          s = pd.read_csv("result/snapshot.csv")
+          ok = int((s["flow_last"] == s["date"]).sum())
+          msg = f"수급 스냅샷 {s['date'].max()}: 당일 수급 확정 {ok}/{len(s)}종목"
+          print(msg)
+          if ok < 0.8 * len(s):
+              notify.send("⚠️ " + msg + " — 네이버 수급이 아직 확정 전입니다. 이 날 스냅샷은 시험에서 제외되며, 실행 시각을 늦추는 것을 검토하세요.")
+          PY
+
+      - name: Save snapshot
+        if: ${{ hashFiles('result/snapshot.csv') != '' }}
+        run: |
+          D=$(python -c "import pandas as pd; print(pd.read_csv('result/snapshot.csv')['date'].max())")
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git fetch origin stock-data; then
+            git worktree add -B stock-data ../data FETCH_HEAD
+          else
+            git worktree add --orphan -b stock-data ../data
+          fi
+          mkdir -p ../data/kr
+          cp result/snapshot.csv "../data/kr/$D.csv"
+          cd ../data
+          git add kr
+          if git diff --cached --quiet; then echo "변경 없음"; exit 0; fi
+          git commit -m "한국 수급 스냅샷 $D"
+          git push origin stock-data || { git pull --rebase origin stock-data && git push origin stock-data; }

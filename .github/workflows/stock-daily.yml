@@ -13,9 +13,6 @@ on:
         type: boolean
         default: false
 
-permissions:
-  contents: write   # 수급 스냅샷을 stock-data 브랜치에 저장하기 위해 필요(코드 브랜치는 건드리지 않음)
-
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -41,27 +38,6 @@ jobs:
           SRC="--naver"; if [ "$DEMO" = "true" ]; then SRC="--demo"; fi
           DART=""; if [ -n "$DART_API_KEY" ]; then DART="--dart"; fi
           python -m stock $SRC $DART --telegram --out result
-
-      # 한국 수급은 과거 이력을 구할 수 없어 매일의 분석 결과를 stock-data 브랜치에 날짜별 CSV로 쌓는다(나중에 수급 버전 시험에 사용).
-      - name: Save snapshot
-        if: ${{ !inputs.demo && hashFiles('result/snapshot.csv') != '' }}
-        continue-on-error: true   # 저장 실패가 텔레그램 리포트를 막지 않게
-        run: |
-          D=$(python -c "import pandas as pd; print(pd.read_csv('result/snapshot.csv')['date'].max())")
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if git fetch origin stock-data; then
-            git worktree add -B stock-data ../data FETCH_HEAD
-          else
-            git worktree add --orphan -b stock-data ../data
-          fi
-          mkdir -p ../data/kr
-          cp result/snapshot.csv "../data/kr/$D.csv"
-          cd ../data
-          git add kr
-          if git diff --cached --quiet; then echo "변경 없음"; exit 0; fi
-          git commit -m "한국 수급 스냅샷 $D"
-          git push origin stock-data || { git pull --rebase origin stock-data && git push origin stock-data; }
 
       - uses: actions/upload-artifact@v4
         with:

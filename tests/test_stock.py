@@ -342,3 +342,27 @@ def test_evaluate_snapshots_detects_planted_signal_and_waits_when_short():
     assert "수급 상위 3" in out and "의미 있음" in out
     assert "아직 부족" in evaluate(snap[snap["date"] <= f"{days[70]:%Y-%m-%d}"], market)  # 짧으면 판단 보류
     assert "아직 없습니다" in evaluate(snap.iloc[:0], market)
+
+
+def test_evaluate_ignores_snapshots_with_lagging_flow():
+    import numpy as np
+    import pandas as pd
+    from stock.snapshot import evaluate
+    rng = np.random.default_rng(2)
+    days = pd.bdate_range("2025-01-01", periods=400)
+    market = {}
+    for i in range(12):
+        c = 100 * np.cumprod(1 + rng.normal(0, 0.01, 400))
+        market[f"{i:06d}"] = pd.DataFrame({"open": c, "high": c, "low": c, "close": c, "volume": 1.0}, index=days)
+    rows = []
+    for t in range(60, 300):
+        for code, df in market.items():
+            c = df["close"].to_numpy()
+            rows.append({"date": f"{days[t]:%Y-%m-%d}", "code": code, "name": code, "theme": "T", "close": c[t], "score": rng.random(),
+                         "stage": "관망", "bias": "중립", "bias_pts": 0, "ret5": 0, "ret20": 0, "vol_ratio": 1, "prox60": 1,
+                         "flow_ratio": c[t + 10] / c[t] - 1, "indiv_ratio": 0, "both_buy": True, "foreign5": 0, "inst5": 0, "indiv5": 0,
+                         "flow_last": f"{days[t - 1]:%Y-%m-%d}"})  # 전부 하루 늦은 수급
+    out = evaluate(pd.DataFrame(rows), market)
+    assert "수급 상위 3" not in out and "확정된 날이 아직 0일" in out and "하루 늦은" in out
+    rows2 = [dict(r, flow_last=r["date"]) for r in rows]  # 전부 그날 수급이면 시험이 진행된다
+    assert "수급 상위 3" in evaluate(pd.DataFrame(rows2), market)
