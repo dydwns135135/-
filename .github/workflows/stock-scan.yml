@@ -55,7 +55,7 @@ jobs:
           fi
           mkdir -p ../data/scan/themes
           cp result/scan_snapshot.csv "../data/scan/$D.csv"
-          cp result/themes.csv "../data/scan/themes/$D.csv"
+          cp result/scan_themes.csv "../data/scan/themes/$D.csv"
           cd ../data
           git add scan
           if git diff --cached --quiet; then echo "변경 없음"; exit 0; fi

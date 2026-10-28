@@ -537,3 +537,49 @@ def test_flowcheck_allows_one_business_day_lag(tmp_path, capsys):
     pd.DataFrame({"date": ["2026-10-28"] * 5, "flow_last": ["2026-10-27"] * 5}).to_csv(p, index=False)
     main(str(p), "수급 스냅샷")
     assert "직전 거래일까지 확인된 종목 5/5" in capsys.readouterr().out  # 모두 하루 늦어도 경고 없음
+
+
+def test_lag_flow_unifies_flow_definition_across_stocks():
+    import numpy as np
+    import pandas as pd
+    from stock.snapshot import lag_flow
+    days = pd.bdate_range("2026-10-19", periods=8)
+    def mk(today_flow, flow_last):
+        df = pd.DataFrame({"open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0,
+                           "foreign": np.arange(8, dtype=float) * 10, "inst": 1.0, "individual": -1.0}, index=days)
+        df.loc[days[-1], ["foreign", "inst", "individual"]] = today_flow   # 오늘 수급: 있는 종목은 실제 값, 없는 종목은 0 으로 채워진 값
+        df.attrs["flow_last"] = flow_last
+        return df
+    fresh, stale = mk(999.0, f"{days[-1]:%Y-%m-%d}"), mk(0.0, f"{days[-2]:%Y-%m-%d}")   # 오늘 수급이 있는 종목 / 없는 종목
+    out = lag_flow({"A": fresh, "B": stale, "KOSPI": pd.DataFrame({"close": [1.0, 2.0]})})
+    prev = f"{days[-2]:%Y-%m-%d}"
+    assert out["A"]["foreign"].iloc[-5:].sum() == out["B"]["foreign"].iloc[-5:].sum()   # 오늘 수급 유무와 상관없이 같은 정의
+    assert out["A"]["foreign"].iloc[-1] == 60.0 and out["A"]["foreign"].iloc[0] == 0.0  # 한 거래일 뒤로 밀림(오늘 값 999 는 버려짐)
+    assert out["A"].attrs["flow_last"] == out["B"].attrs["flow_last"] == prev
+    assert fresh["foreign"].iloc[-1] == 999.0 and fresh.attrs["flow_last"] == f"{days[-1]:%Y-%m-%d}"  # 원본은 건드리지 않는다
+    assert "foreign" not in out["KOSPI"].columns
+    old = mk(0.0, f"{days[-4]:%Y-%m-%d}")                              # 더 오래된 수급 기록은 그대로 두어 시험에서 제외된다
+    assert lag_flow({"C": old})["C"].attrs["flow_last"] == f"{days[-4]:%Y-%m-%d}"
+    none = mk(0.0, None)
+    assert lag_flow({"D": none})["D"].attrs["flow_last"] is None
+
+
+def test_saved_snapshot_uses_lagged_flow_but_report_keeps_today(capsys, monkeypatch, tmp_path):
+    import pandas as pd
+    import stock.__main__ as m
+    import stock.scan as scan
+    from stock.data import synthetic_market
+    themes = {"테마A": {f"{i:06d}": f"종목{i}" for i in range(1, 6)}, "테마B": {f"{i:06d}": f"종목{i}" for i in range(6, 11)}}
+    mk = synthetic_market(themes=themes, index="KOSPI")
+    monkeypatch.setattr(scan, "build_scan", lambda **k: (themes, {"themes_total": 9, "themes_picked": 2, "themes_used": 2, "source": "theme",
+                                                                    "member_errors": {}, "stocks": 10}))
+    monkeypatch.setattr(m, "load_naver", lambda codes, **k: mk)
+    m.main(["--scan", "--out", str(tmp_path)])
+    snap = pd.read_csv(tmp_path / "scan_snapshot.csv", dtype={"code": str})
+    for code in ("000001", "000007"):
+        row = snap[snap["code"] == code].iloc[0]
+        assert abs(row["foreign5"] - mk[code]["foreign"].iloc[-6:-1].sum()) < 1e-3   # 저장분: 직전 5거래일 수급(오늘 제외)
+    st = pd.read_csv(tmp_path / "stocks.csv", dtype={"code": str})
+    r = st[st["code"] == "000001"].iloc[0]
+    assert abs(r["foreign5"] - mk["000001"]["foreign"].iloc[-5:].sum()) < 1e-3          # 화면 리포트: 오늘 수급 포함 그대로
+    assert (tmp_path / "scan_themes.csv").exists()
