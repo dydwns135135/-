@@ -1,0 +1,30 @@
+name: "stock-scan (한국 시장 훑기 → 텔레그램)"
+
+# 네이버 금융 테마 목록에서 최근 움직이는 테마를 자동으로 골라 구성 종목을 분석한다. 주문은 하지 않는다.
+# 처음에는 수동 실행 전용이다(네이버 페이지 구조에 의존해 실제 응답으로 확인한 뒤 스케줄을 켠다).
+on:
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-stock.txt
+      - run: pip install -r requirements-stock.txt
+
+      - name: Scan
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -m stock --scan --telegram --out result
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stock-scan-result
+          path: result/
