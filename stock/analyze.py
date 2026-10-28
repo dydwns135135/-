@@ -129,7 +129,7 @@ def decide(row, regime, disclosure=None, kr=True):
     """대응 방향: 즉시 진입 / 분할 진입 / 관망(패스) + 사유. disclosure=dart.summarize 결과(없으면 미확인)."""
     why = []
     if row["stage"].startswith("과열"):
-        return "관망(패스)", ["과열: 이미 급등, 추격 금지"]
+        return "관망(패스)", ["과열: 이미 급등한 뒤(이후 방향은 불확실, 추격은 조정 위험)"]
     if disclosure and disclosure["negative"]:
         return "관망(패스)", ["악재성 공시: " + disclosure["negative"][0]]
     if row["stage"] == "관망":

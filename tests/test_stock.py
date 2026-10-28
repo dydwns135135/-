@@ -259,3 +259,32 @@ def test_backtest_cli_demo(capsys):
     assert "[성과 확인]" in capsys.readouterr().out
     main(["--demo", "--us", "--backtest"])
     assert "[성과 확인]" in capsys.readouterr().out
+
+
+def test_rank_test_detects_signal_and_noise():
+    import numpy as np
+    import pandas as pd
+    from stock.backtest import format_report, rank_test
+    rng = np.random.default_rng(0)
+    rows = []
+    for d in pd.bdate_range("2024-01-01", periods=300):
+        for i in range(12):
+            score = float(i)  # 점수가 높을수록 이후 수익률이 높은 세상
+            rows.append({"code": f"S{i}", "name": f"S{i}", "theme": "T", "date": d, "stage": "관망", "bias": "중립",
+                         "score": score, "bias_pts": int(rng.integers(-3, 4)),
+                         "r5": 0.002 * i + rng.normal(0, 0.01), "r10": 0.004 * i + rng.normal(0, 0.01)})
+    df = pd.DataFrame(rows)
+    r = rank_test(df, "score")
+    assert r[5]["top"][0] > 0.005 and abs(r[5]["top"][2]) >= 2  # 진짜 관계는 잡힌다
+    assert r[5]["bottom"][0] < -0.005
+    noise = rank_test(df.assign(score=rng.permutation(df["score"].to_numpy())), "score")
+    assert abs(noise[5]["top"][2]) < 3  # 점수를 섞으면 관계가 사라진다
+    assert rank_test(df.iloc[:20], "score")[5]["top"] is None  # 날짜 수가 모자라면 판단 보류
+    assert "[날마다 순위 시험]" in format_report(df) and "점수 상위 3" in format_report(df)
+
+
+def test_report_wording_updated(capsys):
+    from stock.__main__ import main
+    main(["--demo"])
+    out = capsys.readouterr().out
+    assert "근거는 확인되지 않았습니다" in out and "추격 금지" not in out

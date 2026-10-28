@@ -27,7 +27,8 @@ def collect(market, themes_map, horizons=HORIZONS, min_hist=70):
                 if r is None:
                     continue
                 rec = {"code": code, "name": name, "theme": theme, "date": df.index[t],
-                       "stage": r["stage"].split("(")[0], "bias": r["bias"].split("(")[0], "score": r["score"]}
+                       "stage": r["stage"].split("(")[0], "bias": r["bias"].split("(")[0], "score": r["score"],
+                       "bias_pts": r["bias_pts"]}
                 for h in horizons:
                     rec[f"r{h}"] = c[t + h] / c[t] - 1
                 rows.append(rec)
@@ -42,6 +43,46 @@ def summarize(df, key, horizons=HORIZONS):
             row[f"mean{h}"], row[f"win{h}"] = g[f"r{h}"].mean(), (g[f"r{h}"] > 0).mean()
         out.append(row)
     return pd.DataFrame(out)
+
+
+def rank_test(df, key="score", k=3, horizons=HORIZONS, min_stocks=10):
+    """날마다 종목을 key 로 줄 세워 상위 k·하위 k 의 이후 수익률이 그날 전체 평균보다 얼마나 높았는지 본다.
+
+    h일 간격으로만 표본을 뽑아 겹치는 기간을 없애므로(독립에 가깝다) 단순 신호 집계보다 오차 계산이 정직하다.
+    """
+    order = [key] if key == "score" else [key, "score"]
+    out = {}
+    for h in horizons:
+        rows = []
+        for date, g in df.groupby("date"):
+            if len(g) < min_stocks:
+                continue
+            g = g.sort_values(order, ascending=False)
+            m = g[f"r{h}"].mean()
+            rows.append((date, g.head(k)[f"r{h}"].mean() - m, g.tail(k)[f"r{h}"].mean() - m))
+        s = pd.DataFrame(rows, columns=["date", "top", "bottom"]).set_index("date").sort_index().iloc[::h]
+        res = {"days": len(s)}
+        for col in ("top", "bottom"):
+            x = s[col]
+            if len(x) >= 10 and x.std() > 0:
+                res[col] = (x.mean(), (x > 0).mean(), x.mean() / (x.std() / np.sqrt(len(x))))
+            else:
+                res[col] = None
+        out[h] = res
+    return out
+
+
+def _rank_line(label, res, horizons=HORIZONS):
+    parts = []
+    for h in horizons:
+        r = res[h]["top"]
+        if r is None:
+            parts.append(f"{h}일 표본 부족")
+            continue
+        mean, win, t = r
+        tag = "의미 있음" if abs(t) >= 2 else "구별 안 됨"
+        parts.append(f"{h}일 {mean:+.2%}p (이긴 날 {win:.0%}, t={t:+.1f} → {tag})")
+    return f"  {label:<14}" + " | ".join(parts)
 
 
 def verdict(df, mask, h=10, min_n=30):
@@ -72,6 +113,15 @@ def format_report(df, horizons=HORIZONS):
         for _, r in s.iterrows():
             lines.append(f"  {r[key]:<8} n={int(r['n']):>5} | " +
                          " | ".join(f"{h}일 {r[f'mean{h}']:+.1%} (승률 {r[f'win{h}']:.0%})" for h in horizons))
+    n_days = rank_test(df, "score")[HORIZONS[0]]["days"]
+    lines.append(f"\n[날마다 순위 시험] 매일 점수 상위 3종목 − 그날 전체 평균 (겹치지 않게 {HORIZONS[0]}·{HORIZONS[1]}일 간격 표본, 약 {n_days}일)")
+    for key, label in (("score", "점수 상위 3"), ("bias_pts", "흐름 상위 3")):
+        res = rank_test(df, key)
+        lines.append(_rank_line(label, res))
+    low = rank_test(df, "score")
+    lines.append("  점수 하위 3   " + " | ".join(
+        (f"{h}일 {low[h]['bottom'][0]:+.2%}p (t={low[h]['bottom'][2]:+.1f})" if low[h]["bottom"] else f"{h}일 표본 부족") for h in HORIZONS))
+    lines.append("  |t|≥2 이면 우연이라 보기 어렵다는 뜻이지만, 여러 항목을 동시에 보면 우연히 하나쯤 높게 나올 수 있습니다.")
     lines.append("\n판정(10일 기준):")
     lines.append("  선점 후보: " + verdict(df, df["stage"] == "선점 후보"))
     lines.append("  상승 우세: " + verdict(df, df["bias"] == "상승 우세"))
