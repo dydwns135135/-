@@ -69,3 +69,14 @@ def test_naver_flow_json_prefers_real_individual():
     import pytest
     with pytest.raises(ValueError):
         parse_flow_json([{"bizdate": "x"}])
+
+
+def test_add_flow_tolerates_missing_today():
+    import pandas as pd
+    from stock.naver import add_flow, parse_chart
+    days = pd.bdate_range("2026-10-19", periods=8)
+    df = parse_chart("".join(f'<item data="{d:%Y%m%d}|100|110|90|105|1000" />' for d in days))
+    flow = pd.DataFrame({"inst_qty": 10.0, "foreign_qty": 5.0, "indiv_qty": -15.0}, index=days[:-1])  # 오늘(마지막) 수급 없음
+    j = add_flow(df, flow)
+    assert "foreign" in j and j["foreign"].iloc[-1] == 0 and j["foreign"].iloc[-2] == 5 * 105
+    assert "foreign" not in add_flow(df, flow.iloc[:-5])  # 최근 수급이 너무 적으면 사용 안 함

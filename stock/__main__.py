@@ -57,6 +57,8 @@ def run(a):
     print(f"[시황] {reg['label']}  (KOSPI 20일 {reg['ret20']:+.1%})")
     if reg["points"] <= 1:
         print("  → 지수가 약하면 신규 진입 비중을 줄이세요.")
+    n_flow = int(stocks["flow_ratio"].notna().sum())
+    print(f"[수급 반영] {n_flow}/{len(stocks)}종목" + ("" if n_flow else "  ※ 수급 없이 가격·거래량만으로 분석됨"))
     print("\n[테마 순위]")
     for i, r in themes.iterrows():
         print(f"{i+1}. {r['theme']:<10} 점수 {r['score']:5.1f} | 강세종목비율 {r['breadth']:.0%} | "
