@@ -98,8 +98,9 @@ def _get(url, **params):
 def add_flow(df, flow):
     """순매매량×종가로 금액 추정해 foreign/inst/individual 컬럼 추가(공통 날짜만, 최근 구간)."""
     j = df.join(flow, how="left")
-    if j[["inst_qty", "foreign_qty"]].iloc[-5:].isna().any().any():
-        return df  # 최근 5일 수급이 비면 사용하지 않음
+    # 최근 5개 일봉 중 3일 이상 수급이 있으면 사용(당일 수급은 장중·직후엔 비어 있을 수 있어 0으로 채움)
+    if j["inst_qty"].iloc[-5:].notna().sum() < min(3, len(j)):
+        return df
     j[["inst_qty", "foreign_qty"]] = j[["inst_qty", "foreign_qty"]].fillna(0)
     j["inst"] = j["inst_qty"] * j["close"]
     j["foreign"] = j["foreign_qty"] * j["close"]
@@ -123,7 +124,10 @@ def load_naver(codes, days=250, delay=0.3, log=print):
             log(f"일봉 실패 {code}: {type(e).__name__}: {str(e)[:80]}")
             continue
         try:
-            df = add_flow(df, fetch_flow(code))
+            flow = fetch_flow(code)
+            df = add_flow(df, flow)
+            if "foreign" not in df:
+                log(f"수급 미반영 {code}: 일봉 최신 {df.index[-1]:%Y-%m-%d}, 수급 최신 {flow.index[-1]:%Y-%m-%d}")
         except Exception as e:
             log(f"수급 실패 {code}: {type(e).__name__}: {str(e)[:300]} (가격만 분석)")
         out[code] = df
