@@ -64,7 +64,11 @@ def analyze_stock(df):
         stage = "상승 진행(눌림 대기)"
     else:
         stage = "관망"
-    return {"score": round(score, 1), "stage": stage, "ret5": ret5, "ret20": ret20, "ext": ext,
+    indiv_ratio = None
+    if "individual" in df.columns:
+        indiv_ratio = df["individual"].iloc[-5:].sum() / (c * v).iloc[-5:].sum()
+    both_buy = flow_ratio is not None and df["foreign"].iloc[-5:].sum() > 0 and df["inst"].iloc[-5:].sum() > 0
+    return {"score": round(score, 1), "stage": stage, "indiv_ratio": indiv_ratio, "both_buy": bool(both_buy), "ret5": ret5, "ret20": ret20, "ext": ext,
             "vol_ratio": vol_ratio, "prox60": prox, "flow_ratio": flow_ratio,
             "above_ma20": bool(last > ma20.iloc[-1]), "value5": float((c * v).iloc[-5:].sum()),
             "value_prev": float((c * v).iloc[-25:-5].sum() / 4)}
@@ -96,3 +100,31 @@ def analyze_themes(market, themes):
     t = pd.DataFrame(rows).sort_values("score", ascending=False).reset_index(drop=True)
     s = pd.DataFrame(stocks).sort_values("score", ascending=False).reset_index(drop=True)
     return t, s
+
+
+def decide(row, regime, disclosure=None):
+    """대응 방향: 즉시 진입 / 분할 진입 / 관망(패스) + 사유. disclosure=dart.summarize 결과(없으면 미확인)."""
+    why = []
+    if row["stage"].startswith("과열"):
+        return "관망(패스)", ["과열: 이미 급등, 추격 금지"]
+    if disclosure and disclosure["negative"]:
+        return "관망(패스)", ["악재성 공시: " + disclosure["negative"][0]]
+    if row["stage"] == "관망":
+        return "관망(패스)", ["점수 부족"]
+    level = 2 if (row["score"] >= 75 and row["ret20"] < 0.12 and row["both_buy"]) else 1
+    why.append(f"점수 {row['score']}" + (", 외국인·기관 동반 순매수" if row["both_buy"] else ""))
+    if row["stage"] != "선점 후보":
+        level = min(level, 1)
+        why.append("이미 상승 진행 중 → 눌림 때만")
+    if disclosure is None:
+        level = min(level, 1)
+        why.append("공시 미확인(--dart 로 확인 전엔 분할 진입까지만)")
+    elif disclosure["positive"]:
+        why.append("호재성 공시: " + disclosure["positive"][0])
+    else:
+        level = min(level, 1)
+        why.append("최근 3개월 뚜렷한 호재 공시 없음")
+    if regime["points"] <= 1:
+        level -= 1
+        why.append(f"시황 {regime['label']} → 한 단계 보수적")
+    return {2: "즉시 진입", 1: "분할 진입", 0: "관망(패스)"}.get(max(level, 0), "관망(패스)"), why

@@ -23,3 +23,19 @@ def test_overheat_flagged_and_no_flow_ok():
 
 def test_short_history_returns_none():
     assert analyze_stock(synthetic_market()["000660"].iloc[:30]) is None
+
+
+def test_dart_classify_and_decide():
+    from stock.analyze import decide
+    from stock.dart import classify_title, summarize
+    assert classify_title("단일판매ㆍ공급계약체결") == 1
+    assert classify_title("유상증자결정") == -1
+    assert classify_title("분기보고서") == 0
+    m = synthetic_market()
+    r = analyze_stock(m["000660"])
+    reg = {"points": 3, "label": "강세(적극)"}
+    assert decide({**r, "stage": "과열(추격금지)"}, reg)[0] == "관망(패스)"
+    assert decide({**r, "stage": "선점 후보"}, reg, summarize(["유상증자결정"]))[0] == "관망(패스)"
+    strong = {**r, "stage": "선점 후보", "score": 80, "ret20": 0.05, "both_buy": True}
+    assert decide(strong, reg, summarize(["공급계약체결"]))[0] == "즉시 진입"
+    assert decide(strong, {"points": 1, "label": "약세(보수)"}, summarize(["공급계약체결"]))[0] == "분할 진입"

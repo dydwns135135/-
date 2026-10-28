@@ -2,7 +2,8 @@
 import argparse
 import os
 
-from stock.analyze import analyze_themes, market_regime
+from stock.analyze import analyze_themes, decide, market_regime
+from stock.dart import fetch_summaries
 from stock.data import load_csv_dir, load_pykrx, synthetic_market
 from stock.themes import THEMES
 
@@ -16,6 +17,7 @@ def main(argv=None):
     g.add_argument("--pykrx", action="store_true", help="pykrx 실데이터(pip install pykrx)")
     g.add_argument("--csv", metavar="DIR", help="<코드>.csv 폴더")
     ap.add_argument("--top", type=int, default=5, help="종목 표시 개수")
+    ap.add_argument("--dart", action="store_true", help="DART 공시 확인(환경변수 DART_API_KEY 필요)")
     ap.add_argument("--out", help="결과 CSV 저장 폴더")
     a = ap.parse_args(argv)
 
@@ -38,12 +40,18 @@ def main(argv=None):
               f"거래대금 {r['value_growth']:+.0%} | 대장 {r['leader']} ({r['leader_stage']})")
     print("\n[선점 후보] 점수 높고 아직 안 오른 종목")
     picks = stocks[stocks["stage"] == "선점 후보"].head(a.top)
+    disc = fetch_summaries(list(picks["code"])) if a.dart else {}
+    if a.dart and not disc:
+        print("  (DART 조회 실패 또는 DART_API_KEY 없음 → 공시 미확인)")
     if picks.empty:
         print("  없음")
     for _, r in picks.iterrows():
         fl = "수급 n/a" if r["flow_ratio"] is None else f"수급 {r['flow_ratio']:+.1%}"
         print(f"  {r['name']}({r['theme']}) 점수 {r['score']} | 20일 {r['ret20']:+.1%} | "
-              f"거래량 x{r['vol_ratio']:.1f} | 60일고점 {r['prox60']:.0%} | {fl}")
+              f"거래량 x{r['vol_ratio']:.1f} | 60일고점 {r['prox60']:.0%} | {fl}"
+              + ("" if r["indiv_ratio"] is None else f" | 개인 {r['indiv_ratio']:+.1%}"))
+        act, why = decide(r, reg, disc.get(r["code"]))
+        print(f"    → 대응: {act}  ({'; '.join(why)})")
     hot = stocks[stocks["stage"].str.startswith("과열")]
     if len(hot):
         print("\n[과열 — 추격 금지] " + ", ".join(f"{r['name']}(5일 {r['ret5']:+.0%})" for _, r in hot.iterrows()))

@@ -36,6 +36,7 @@ def load_pykrx(codes, days=250, index_code="1001"):
             tv = k.get_market_trading_value_by_date(s, e, code)
             df["foreign"] = tv["외국인합계"]
             df["inst"] = tv["기관합계"]
+            df["individual"] = tv["개인"]
         except Exception:
             pass
         out[code] = df
@@ -77,7 +78,7 @@ def synthetic_market(n=260, seed=7):
             if ramp:
                 flow[n - k:] += 0.06 * val[n - k:]
             out[code] = pd.DataFrame({"open": o, "high": h, "low": l, "close": c, "volume": v,
-                                      "foreign": flow * 0.6, "inst": flow * 0.4}, index=idx)
+                                      "foreign": flow * 0.6, "inst": flow * 0.4, "individual": -flow}, index=idx)
     m = 2500 * np.cumprod(1 + rng.normal(0.0005, 0.008, n))
     out["KOSPI"] = pd.DataFrame({"close": m, "volume": rng.integers(3e8, 5e8, n).astype(float)}, index=idx)
     return out
