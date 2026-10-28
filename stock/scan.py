@@ -20,8 +20,15 @@ THEME_NO = re.compile(r"[?&]no=(\d+)")
 def _get(url, **params):
     r = requests.get(url, params=params, headers=HEAD, timeout=20)
     r.raise_for_status()
-    r.encoding = "euc-kr"
-    return r.text
+    return decode(r.content)
+
+
+def decode(content):
+    """네이버 페이지는 UTF-8(새 페이지)과 EUC-KR(옛 페이지)이 섞여 있어 UTF-8 을 먼저 시도한다."""
+    try:
+        return content.decode("utf-8")
+    except UnicodeDecodeError:
+        return content.decode("euc-kr", errors="replace")
 
 
 def _snippet(html, n=120):
