@@ -48,12 +48,9 @@ def test_naver_parsers_and_flow_merge():
            '<item data="20261028|105|120|100|115|2000" /></chart></chartdata>')
     df = parse_chart(xml)
     assert list(df.index.strftime("%Y%m%d")) == ["20261027", "20261028"] and df["close"].iloc[-1] == 115
-    html = ("<table><tr><th>날짜</th><th>종가</th><th>기관</th><th>외국인</th></tr>"
-            "<tr><th></th><th></th><th>순매매량</th><th>순매매량</th></tr></table>")
-    html = ("<table><thead><tr><th rowspan=2>날짜</th><th rowspan=2>종가</th><th colspan=1>기관</th><th colspan=1>외국인</th></tr>"
-            "<tr><th>순매매량</th><th>순매매량</th></tr></thead><tbody>"
-            "<tr><td>2026.10.28</td><td>115</td><td>+1,000</td><td>-200</td></tr>"
-            "<tr><td>2026.10.27</td><td>105</td><td>500</td><td>300</td></tr></tbody></table>")
+    html = ("<table><tr><th>날짜</th><th>종가</th></tr>"
+            "<tr><td><span>2026.10.28</span></td><td>115</td><td>5</td><td>+1%</td><td>2,000</td><td>+1,000</td><td>-200</td><td>9</td><td>5%</td></tr>"
+            "<tr><td><span>2026.10.27</span></td><td>105</td><td>5</td><td>+1%</td><td>1,000</td><td>500</td><td>300</td><td>9</td><td>5%</td></tr></table>")
     fl = parse_flow(html)
     assert fl.loc["2026-10-28", "inst_qty"] == 1000 and fl.loc["2026-10-28", "foreign_qty"] == -200
     j = add_flow(df, fl)

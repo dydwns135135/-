@@ -23,22 +23,28 @@ def parse_chart(xml):
     return df.astype(float).sort_index()
 
 
+def _num(x):
+    x = x.replace(",", "").replace("+", "").strip()
+    return float(x) if re.fullmatch(r"-?\d+(\.\d+)?", x) else None
+
+
 def parse_flow(html):
-    """종목 페이지 HTML → DataFrame(index=날짜, columns=inst_qty, foreign_qty). 기관/외국인 순매매량(주)."""
-    for t in pd.read_html(StringIO(html)):
-        cols = ["".join(map(str, c)) if isinstance(c, tuple) else str(c) for c in t.columns]
-        if any("기관" in c for c in cols) and any("외국인" in c for c in cols) and any("날짜" in c for c in cols):
-            t.columns = cols
-            d = [c for c in cols if "날짜" in c][0]
-            i = [c for c in cols if "기관" in c and "순매매" in c][0]
-            f = [c for c in cols if "외국인" in c and "순매매" in c][0]
-            t = t[[d, i, f]].dropna()
-            t[d] = pd.to_datetime(t[d], format="%Y.%m.%d", errors="coerce")
-            out = pd.DataFrame({"inst_qty": pd.to_numeric(t[i].astype(str).str.replace(",", "").str.replace("+", ""), errors="coerce").values,
-                                "foreign_qty": pd.to_numeric(t[f].astype(str).str.replace(",", "").str.replace("+", ""), errors="coerce").values},
-                               index=t[d].values)
-            return out[out.index.notna()].dropna()
-    raise ValueError("수급 표를 찾지 못함")
+    """종목 페이지 HTML → DataFrame(index=날짜, columns=inst_qty, foreign_qty). 기관/외국인 순매매량(주).
+
+    행 구성(날짜, 종가, 전일비, 등락률, 거래량, 기관 순매매량, 외국인 순매매량, 보유주수, 보유율)을 위치로 읽는다.
+    """
+    import lxml.html
+
+    rows = {}
+    for tr in lxml.html.fromstring(html).iter("tr"):
+        cells = [" ".join(td.text_content().split()) for td in tr.findall("td")]
+        if len(cells) >= 7 and re.fullmatch(r"\d{4}\.\d{2}\.\d{2}", cells[0]):
+            inst, fgn = _num(cells[5]), _num(cells[6])
+            if inst is not None and fgn is not None:
+                rows[pd.Timestamp(cells[0].replace(".", "-"))] = (inst, fgn)
+    if not rows:
+        raise ValueError("수급 표를 찾지 못함")
+    return pd.DataFrame(rows, index=["inst_qty", "foreign_qty"]).T.sort_index()
 
 
 def _get(url, **params):
@@ -69,7 +75,7 @@ def load_naver(codes, days=250, delay=0.3, log=print):
             df = parse_chart(_get("https://fchart.stock.naver.com/sise.nhn", symbol=code, timeframe="day",
                                   count=days, requestType=0).text)
         except Exception as e:
-            log(f"일봉 실패 {code}: {type(e).__name__}")
+            log(f"일봉 실패 {code}: {type(e).__name__}: {str(e)[:80]}")
             continue
         try:
             pages = []
@@ -79,7 +85,7 @@ def load_naver(codes, days=250, delay=0.3, log=print):
                 pages.append(parse_flow(r.text))
             df = add_flow(df, pd.concat(pages))
         except Exception as e:
-            log(f"수급 실패 {code}: {type(e).__name__} (가격만 분석)")
+            log(f"수급 실패 {code}: {type(e).__name__}: {str(e)[:80]} (가격만 분석)")
         out[code] = df
         time.sleep(delay)
     if len(out) < 2:
