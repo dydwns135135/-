@@ -34,11 +34,11 @@ def test_dart_classify_and_decide():
     m = synthetic_market()
     r = analyze_stock(m["000660"])
     reg = {"points": 3, "label": "강세(적극)"}
-    assert decide({**r, "stage": "과열(추격금지)"}, reg)[0] == "관망(패스)"
-    assert decide({**r, "stage": "선점 후보"}, reg, summarize(["유상증자결정"]))[0] == "관망(패스)"
+    assert decide({**r, "stage": "과열(추격금지)"}, reg)[0] == "낮음"
+    assert decide({**r, "stage": "선점 후보"}, reg, summarize(["유상증자결정"]))[0] == "낮음"
     strong = {**r, "stage": "선점 후보", "score": 80, "ret20": 0.05, "both_buy": True}
-    assert decide(strong, reg, summarize(["공급계약체결"]))[0] == "즉시 진입"
-    assert decide(strong, {"points": 1, "label": "약세(보수)"}, summarize(["공급계약체결"]))[0] == "분할 진입"
+    assert decide(strong, reg, summarize(["공급계약체결"]))[0] == "높음"
+    assert decide(strong, {"points": 1, "label": "약세(보수)"}, summarize(["공급계약체결"]))[0] == "보통"
 
 
 def test_naver_parsers_and_flow_merge():
@@ -288,3 +288,57 @@ def test_report_wording_updated(capsys):
     main(["--demo"])
     out = capsys.readouterr().out
     assert "근거는 확인되지 않았습니다" in out and "추격 금지" not in out
+
+
+def test_snapshot_roundtrip_and_flow_last(tmp_path):
+    import pandas as pd
+    from stock.analyze import analyze_themes
+    from stock.data import synthetic_market
+    from stock.naver import add_flow, parse_chart
+    from stock.snapshot import COLS, build_snapshot, load_snapshots
+    from stock.themes import THEMES
+    m = synthetic_market()
+    _, stocks = analyze_themes(m, THEMES)
+    snap = build_snapshot(stocks, m)
+    assert list(snap.columns) == COLS and snap["foreign5"].notna().all() and snap["date"].str.len().eq(10).all()
+    (tmp_path / "kr").mkdir()
+    snap.to_csv(tmp_path / "kr" / "2026-10-28.csv", index=False)
+    snap.to_csv(tmp_path / "kr" / "2026-10-29.csv", index=False)  # 같은 (date, code)는 하나만 남는다
+    back = load_snapshots(tmp_path)
+    assert len(back) == len(snap) and back["code"].str.len().eq(6).all()  # 종목코드 앞의 0 유지
+    # 당일 수급이 비어 있으면 flow_last 는 마지막으로 실제 수급이 있던 날
+    days = pd.bdate_range("2026-10-19", periods=8)
+    df = parse_chart("".join(f'<item data="{d:%Y%m%d}|100|110|90|105|1000" />' for d in days))
+    flow = pd.DataFrame({"inst_qty": 10.0, "foreign_qty": 5.0, "indiv_qty": -15.0}, index=days[:-1])
+    assert add_flow(df, flow).attrs["flow_last"] == f"{days[-2]:%Y-%m-%d}"
+
+
+def test_evaluate_snapshots_detects_planted_signal_and_waits_when_short():
+    import numpy as np
+    import pandas as pd
+    from stock.snapshot import attach_returns, evaluate
+    rng = np.random.default_rng(1)
+    days = pd.bdate_range("2025-01-01", periods=400)
+    market, rows = {}, []
+    for i in range(12):
+        c = 100 * np.cumprod(1 + rng.normal(0, 0.01, 400))
+        market[f"{i:06d}"] = pd.DataFrame({"open": c, "high": c, "low": c, "close": c, "volume": 1.0}, index=days)
+    # 스냅샷: 수급 점수에 '이후 10일 수익률'을 심어 둔 세계 → 시험이 이를 잡아내야 한다
+    for t in range(60, 300):
+        for code, df in market.items():
+            c = df["close"].to_numpy()
+            fut = c[t + 10] / c[t] - 1
+            rows.append({"date": f"{days[t]:%Y-%m-%d}", "code": code, "name": code, "theme": "T", "close": c[t], "score": rng.random(),
+                         "stage": "관망", "bias": "중립", "bias_pts": 0, "ret5": 0, "ret20": 0, "vol_ratio": 1, "prox60": 1,
+                         "flow_ratio": fut + rng.normal(0, 0.005), "indiv_ratio": 0, "both_buy": fut > 0,
+                         "foreign5": 0, "inst5": 0, "indiv5": 0, "flow_last": f"{days[t]:%Y-%m-%d}"})
+    snap = pd.DataFrame(rows)
+    got = attach_returns(snap.iloc[:24], market)
+    first = got.iloc[0]
+    c0 = market[first["code"]]["close"]
+    p = c0.index.get_loc(first["date"])
+    assert abs(first["r5"] - (c0.iloc[p + 5] / c0.iloc[p] - 1)) < 1e-12  # 날짜 정렬이 맞다
+    out = evaluate(snap, market)
+    assert "수급 상위 3" in out and "의미 있음" in out
+    assert "아직 부족" in evaluate(snap[snap["date"] <= f"{days[70]:%Y-%m-%d}"], market)  # 짧으면 판단 보류
+    assert "아직 없습니다" in evaluate(snap.iloc[:0], market)

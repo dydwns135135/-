@@ -92,6 +92,10 @@ def analyze_stock(df):
         ret5=ret5, vol_ratio=vol_ratio, both_buy=both_buy, both_sell=both_sell, overheated=overheated)
     return {"bias": bias, "bias_pts": bias_pts, "bias_why": bias_why,
             "score": round(score, 1), "stage": stage, "indiv_ratio": indiv_ratio, "both_buy": bool(both_buy), "ret5": ret5, "ret20": ret20, "ext": ext,
+            "foreign5": float(df["foreign"].iloc[-5:].sum()) if flow_ratio is not None else None,
+            "inst5": float(df["inst"].iloc[-5:].sum()) if flow_ratio is not None else None,
+            "indiv5": float(df["individual"].iloc[-5:].sum()) if "individual" in df.columns else None,
+            "flow_last": df.attrs.get("flow_last"),
             "vol_ratio": vol_ratio, "prox60": prox, "flow_ratio": flow_ratio,
             "above_ma20": bool(last > ma20.iloc[-1]), "value5": float((c * v).iloc[-5:].sum()),
             "value_prev": float((c * v).iloc[-25:-5].sum() / 4)}
@@ -126,26 +130,29 @@ def analyze_themes(market, themes):
 
 
 def decide(row, regime, disclosure=None, kr=True):
-    """대응 방향: 즉시 진입 / 분할 진입 / 관망(패스) + 사유. disclosure=dart.summarize 결과(없으면 미확인)."""
+    """관찰 우선순위: 높음 / 보통 / 낮음 + 사유(매수·매도 지시가 아니라 어디부터 들여다볼지의 순서).
+
+    disclosure=dart.summarize 결과(없으면 미확인). 과거 시험에서 이 순서가 이후 수익률과 연결된다는 근거는 확인되지 않았다.
+    """
     why = []
     if row["stage"].startswith("과열"):
-        return "관망(패스)", ["과열: 이미 급등한 뒤(이후 방향은 불확실, 추격은 조정 위험)"]
+        return "낮음", ["과열: 이미 급등한 뒤(이후 방향은 불확실, 급등 직후라 변동이 큼)"]
     if disclosure and disclosure["negative"]:
-        return "관망(패스)", ["악재성 공시: " + disclosure["negative"][0]]
+        return "낮음", ["악재성 공시: " + disclosure["negative"][0]]
     if row["stage"] == "관망":
-        return "관망(패스)", ["점수 부족"]
+        return "낮음", ["점수 부족"]
     level = 2 if (row["score"] >= 75 and row["ret20"] < 0.12 and row["both_buy"]) else 1
     if not kr:
-        level = 1  # 미국: 수급·공시 정보가 없어 분할 진입까지만
+        level = 1  # 미국: 수급·공시 정보가 없어 '보통'까지만
     why.append(f"점수 {row['score']}" + (", 외국인·기관 동반 순매수" if row["both_buy"] else ""))
     if row["stage"] != "선점 후보":
         level = min(level, 1)
-        why.append("이미 상승 진행 중 → 눌림 때만")
+        why.append("이미 상승 진행 중")
     if not kr:
-        why.append("미국: 수급·공시 미반영 → 분할 진입까지만")
+        why.append("미국: 수급·공시 미반영 → '높음'은 부여하지 않음")
     elif disclosure is None:
         level = min(level, 1)
-        why.append("공시 미확인(--dart 로 확인 전엔 분할 진입까지만)")
+        why.append("공시 미확인(--dart 로 확인 전엔 '높음'을 주지 않음)")
     elif disclosure["positive"]:
         why.append("호재성 공시: " + disclosure["positive"][0])
     else:
@@ -153,5 +160,5 @@ def decide(row, regime, disclosure=None, kr=True):
         why.append("최근 3개월 뚜렷한 호재 공시 없음")
     if regime["points"] <= 1:
         level -= 1
-        why.append(f"시황 {regime['label']} → 한 단계 보수적")
-    return {2: "즉시 진입", 1: "분할 진입", 0: "관망(패스)"}.get(max(level, 0), "관망(패스)"), why
+        why.append(f"시황 {regime['label']} → 한 단계 낮춤")
+    return {2: "높음", 1: "보통", 0: "낮음"}.get(max(level, 0), "낮음"), why
