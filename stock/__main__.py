@@ -99,8 +99,13 @@ def run(a):
     if reg["points"] <= 1:
         print("  → 지수가 약하면 신규 진입 비중을 줄이세요.")
     if scan_stats:
-        print(f"[훑기] 네이버 테마 {scan_stats['themes_total']}개 중 움직이는 {scan_stats['themes_picked']}개를 골라 "
-              f"종목 {scan_stats['stocks']}개 분석 (테마 {scan_stats['themes_used']}개 사용, 데이터 수집 실패 {scan_stats['failed']}개)")
+        if scan_stats.get("source") == "ranking":
+            tried = ", ".join(f"{k}→{v}" for k, v in scan_stats.get("member_errors", {}).items()) or "없음"
+            print(f"[훑기] 테마 구성 종목 조회 실패(시도한 주소→상태: {tried}) → 거래대금·상승률 상위 종목 {scan_stats['stocks']}개로 대신 훑음 "
+                  f"(테마 순위는 의미 없음, 데이터 수집 실패 {scan_stats['failed']}개)")
+        else:
+            print(f"[훑기] 네이버 테마 {scan_stats['themes_total']}개 중 오늘 오르는 {scan_stats['themes_picked']}개를 골라 "
+                  f"종목 {scan_stats['stocks']}개 분석 (테마 {scan_stats['themes_used']}개 사용, 데이터 수집 실패 {scan_stats['failed']}개)")
         print("      ※ 이미 움직인 테마를 고르는 방식이라 늦을 수 있고, 같은 종목이 여러 테마에 있으면 한 번만 표시합니다.")
     expected = [c for m in themes_map.values() for c in m]
     missing = [c for c in expected if c not in set(stocks["code"])]
