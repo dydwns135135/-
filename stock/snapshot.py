@@ -62,7 +62,14 @@ def evaluate(snap, market, horizons=HORIZONS):
         return (head + "\n이후 수익률이 확정된 날이 아직 부족합니다. " +
                 " / ".join(f"{h}일 기준 약 {need[h]}거래일 이상 필요" for h in horizons) + " — 더 쌓인 뒤 시험합니다.")
     d = df.dropna(subset=["flow_ratio"])
-    lines = [head, f"수익률이 확정된 날 {df['date'].nunique()}일 · 수급이 있는 종목-일 {len(d)}건",
+    fresh = d[d["flow_last"].astype(str) == d["date"].dt.strftime("%Y-%m-%d")]  # 수급이 그날 것까지 확정된 행만
+    skipped = len(d) - len(fresh)
+    d = fresh
+    if d["date"].nunique() < 10:
+        return (head + f"\n당일 수급이 확정된 날이 아직 {d['date'].nunique()}일뿐입니다(수급이 하루 늦은 {skipped}건은 제외). "
+                "더 쌓인 뒤 시험합니다.")
+    lines = [head, f"수익률이 확정된 날 {df['date'].nunique()}일 · 수급이 그날 것까지 확정된 종목-일 {len(d)}건" +
+             (f" (하루 늦은 {skipped}건 제외)" if skipped else ""),
              "매일 수급 상위 3종목 − 그날 전체 평균 (겹치지 않게 5·10일 간격 표본)"]
     for key, label in (("flow_ratio", "수급 상위 3"), ("score", "점수 상위 3(수급 포함)")):
         lines.append(_rank_line(label, rank_test(d, key), horizons))
