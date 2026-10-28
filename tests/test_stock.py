@@ -368,48 +368,68 @@ def test_evaluate_ignores_snapshots_with_lagging_flow():
     assert "수급 상위 3" in evaluate(pd.DataFrame(rows2), market)
 
 
-THEME_LIST_HTML = """<table><tr><th>테마명</th><th>전일대비</th><th>최근3일</th></tr>
-<tr><td class="col_type1"><a href="/sise/sise_group_detail.naver?type=theme&no=511">HBM(High Bandwidth Memory)</a></td>
-<td><span>+1.20%</span></td><td><span>+6.50%</span></td><td>10</td><td>1</td><td>2</td>
-<td><a href="/item/main.naver?code=000660">SK하이닉스</a></td><td><a href="/item/main.naver?code=042700">한미반도체</a></td></tr>
-<tr><td><a href="/sise/sise_group_detail.naver?type=theme&no=303">방위산업</a></td><td><span>-0.80%</span></td><td><span>+2.10%</span></td>
-<td><a href="/item/main.naver?code=012450">한화에어로스페이스</a></td></tr>
-<tr><td><a href="/sise/sise_group_detail.naver?type=theme&no=88">조선</a></td><td><span>+3.00%</span></td><td><span>-1.00%</span></td></tr>
-<tr><td><a href="/sise/sise_group_detail.naver?type=theme&no=511">HBM(High Bandwidth Memory)</a></td><td>중복 줄</td></tr></table>"""
+def _stock(code, name, kind="stock"):
+    return {"stockType": "domestic", "stockEndType": kind, "itemCode": code, "stockName": name, "closePrice": "1,000"}
 
 
-def _detail_html(codes):
-    rows = "".join(f'<tr><td><div class="name_area"><a href="/item/main.naver?code={c}">N{c}</a></div></td><td>1,000</td></tr>' for c in codes)
-    return f"<table>{rows}<tr><td><a href=\"/item/main.naver?code={codes[0]}\">N{codes[0]}</a></td></tr></table>"  # 같은 종목이 다시 나옴
+def _fake_get_factory(member_ok=True):
+    calls = []
+
+    def fake_get(path, **p):
+        calls.append((path, p))
+        if path == "/api/stocks/theme" and "no" not in p:
+            if p["page"] == 1:
+                return {"stockListSortType": "THEME", "groups": [
+                    {"no": 614, "name": "S7", "totalCount": 7, "changeRate": "10.26", "riseCount": 7, "fallCount": 0, "steadyCount": 0},
+                    {"no": 155, "name": "반도체 대표주", "totalCount": 3, "changeRate": "9.19", "riseCount": 3, "fallCount": 0, "steadyCount": 0},
+                    {"no": 700, "name": "하락 테마", "totalCount": 5, "changeRate": "-3.0", "riseCount": 0, "fallCount": 5, "steadyCount": 0},
+                    {"no": 701, "name": "작은 테마", "totalCount": 2, "changeRate": "20.0", "riseCount": 2, "fallCount": 0, "steadyCount": 0}]}
+            return {"stockListSortType": "THEME", "groups": []}
+        if path.startswith("/api/stocks/theme/614") and member_ok:
+            return {"stocks": [_stock("000660", "SK하이닉스"), _stock("0198D0", "ETF", "etf"), _stock("042700", "한미반도체"),
+                               _stock("000660", "SK하이닉스"), _stock("058470", "리노공업"), _stock("240810", "원익IPS")]}
+        if path.startswith("/api/stocks/theme/155") and member_ok:
+            return {"result": {"stocks": [_stock("000660", "SK하이닉스"), _stock("005930", "삼성전자"), _stock("066570", "LG전자")]}}
+        if path.startswith("/api/stocks/priceTop/") or path.startswith("/api/stocks/up/"):
+            cat = path.rsplit("/", 1)[1]
+            return {"stocks": [_stock("9" + cat[-1] * 5, f"{cat}1"), _stock("8" + cat[-1] * 5, f"{cat}2", "etf"), _stock("000660", "SK하이닉스")]}
+        raise RuntimeError("HTTP404")
+    fake_get.calls = calls
+    return fake_get
 
 
 def test_scan_parsers_and_picking():
-    from stock.scan import parse_theme_list, parse_theme_members, pick_themes
-    th = parse_theme_list(THEME_LIST_HTML)
-    assert [t["no"] for t in th] == ["511", "303", "88"]  # 중복 줄 제거
-    assert th[0]["d1"] == 1.2 and th[0]["d3"] == 6.5 and th[0]["leaders"] == [("000660", "SK하이닉스"), ("042700", "한미반도체")]
-    assert th[2]["d1"] == 3.0 and th[2]["d3"] == -1.0
-    got = pick_themes(th, n3=1, n1=1)  # 3일 1위(HBM) + 전일 1위(조선)
-    assert [t["no"] for t in got] == ["511", "88"]
-    assert parse_theme_members(_detail_html(["005930", "000660", "035420"])) == [("005930", "N005930"), ("000660", "N000660"), ("035420", "N035420")]
-    assert parse_theme_list("<html>점검 중입니다</html>") == []
+    from stock.scan import find_stocks, parse_groups, pick_themes
+    g = parse_groups({"groups": [{"no": 1, "name": "A", "totalCount": 5, "changeRate": "+1,2", "riseCount": 4},
+                                 {"no": 1, "name": "중복", "totalCount": 5}, {"x": 1}]})
+    assert [x["no"] for x in g] == [1] and g[0]["rate"] == 12.0 and g[0]["rise"] == 4  # 중복 제거, 숫자 파싱
+    got = pick_themes([{"no": 1, "name": "a", "total": 5, "rate": 3.0, "rise": 4}, {"no": 2, "name": "b", "total": 2, "rate": 9.0, "rise": 2},
+                       {"no": 3, "name": "c", "total": 5, "rate": 8.0, "rise": 1}, {"no": 4, "name": "d", "total": 5, "rate": None, "rise": 5}])
+    assert [x["no"] for x in got] == [1]  # 작은 테마·상승 비율 낮은 테마·등락률 없는 테마 제외
+    j = {"result": {"stocks": [_stock("005930", "삼성전자"), _stock("069500", "KODEX", "etf"), {"itemCode": "12", "stockName": "짧은코드"},
+                               _stock("005930", "삼성전자")]}}
+    assert find_stocks(j) == [("005930", "삼성전자")]  # ETF·6자리 아님·중복 제외, 구조 위치와 무관
 
 
-def test_build_scan_merges_leaders_dedupes_and_reports_failure():
+def test_build_scan_themes_dedupes_caps_and_filters():
+    from stock.scan import build_scan
+    tm, st = build_scan(n_themes=5, per_theme=4, delay=0, get=_fake_get_factory(), log=lambda m: None)
+    assert list(tm) == ["S7", "반도체 대표주"]  # 등락률 순, 하락·작은 테마 제외
+    assert list(tm["S7"]) == ["000660", "042700", "058470", "240810"]  # ETF·중복 제외, 4개 제한
+    assert st["source"] == "theme" and st["themes_total"] == 4 and st["themes_picked"] == 2 and st["stocks"] == 6  # 000660 은 두 테마에 겹침
+    assert st["member_errors"]["/api/stocks/theme/{no}"] == "OK"
+
+
+def test_build_scan_falls_back_to_ranking_and_reports_tried_urls():
     import pytest
-    from stock.scan import DETAIL_URL, LIST_URL, build_scan
-    def fake_get(url, **p):
-        if url == LIST_URL:
-            return THEME_LIST_HTML if p.get("page") == 1 else "<table></table>"
-        no = p["no"]
-        return {"511": _detail_html(["000660", "058470", "240810", "036930"]),   # 000660 은 주도주와 겹침
-                "303": _detail_html(["012450", "079550", "047810"]),
-                "88": _detail_html(["009540"])}[no]                               # 종목이 3개 미만 → 제외
-    tm, stats = build_scan(n3=5, n1=5, per_theme=4, delay=0, get=fake_get, log=lambda m: None)
-    assert list(tm["HBM(High Bandwidth Memory)"]) == ["000660", "042700", "058470", "240810"]  # 주도주 먼저, 중복 제거, 4개 제한
-    assert "조선" not in tm and stats["themes_thin"] == 1 and stats["themes_used"] == 2 and stats["stocks"] == 7
-    with pytest.raises(RuntimeError, match="점검 중"):
-        build_scan(delay=0, get=lambda url, **p: "<html>점검 중입니다</html>", log=lambda m: None)
+    from stock.scan import build_scan
+    tm, st = build_scan(delay=0, get=_fake_get_factory(member_ok=False), log=lambda m: None)
+    assert list(tm) == ["시장 상위(거래대금·상승률)"] and st["source"] == "ranking"
+    assert "000660" in tm["시장 상위(거래대금·상승률)"] and len(tm["시장 상위(거래대금·상승률)"]) >= 3
+    assert "ETF" not in "".join(tm["시장 상위(거래대금·상승률)"].values())  # ETF 제외
+    assert st["member_errors"]["/api/stocks/theme/{no}"] == "HTTP404"  # 시도한 주소와 상태가 남는다
+    with pytest.raises(RuntimeError, match="테마 목록을 읽지 못함"):
+        build_scan(delay=0, get=lambda path, **p: (_ for _ in ()).throw(RuntimeError("HTTP500")), log=lambda m: None)
 
 
 def test_scan_cli_end_to_end(capsys, monkeypatch):
@@ -419,11 +439,11 @@ def test_scan_cli_end_to_end(capsys, monkeypatch):
     themes = {"테마A": {"000001": "가", "000002": "나", "000003": "다", "000004": "라"},
               "테마B": {"000003": "다", "000005": "마", "000006": "바"}}   # 000003 은 두 테마에 걸침
     mk = synthetic_market(themes=themes, index="KOSPI")
-    monkeypatch.setattr(scan, "build_scan", lambda **k: (themes, {"themes_total": 120, "themes_picked": 2, "themes_used": 2, "themes_thin": 0, "stocks": 6}))
+    monkeypatch.setattr(scan, "build_scan", lambda **k: (themes, {"themes_total": 120, "themes_picked": 2, "themes_used": 2, "source": "theme", "member_errors": {}, "stocks": 6}))
     monkeypatch.setattr(m, "load_naver", lambda codes, **k: mk)
     m.main(["--scan"])
     out = capsys.readouterr().out
-    assert "[훑기] 네이버 테마 120개 중 움직이는 2개" in out and "테마A" in out and "데이터 수집 실패 0개" in out
+    assert "[훑기] 네이버 테마 120개 중 오늘 오르는 2개" in out and "테마A" in out and "데이터 수집 실패 0개" in out
     import re
     names = re.findall(r"^  (\S+)\(테마[AB]\) ", out, flags=re.M)  # 선점 후보·관심 종목 줄
     assert len(names) == len(set(names))  # 여러 테마에 걸친 종목도 한 번만
@@ -434,17 +454,6 @@ def test_scan_cli_end_to_end(capsys, monkeypatch):
         m.main([])
 
 
-def test_decode_prefers_utf8_and_describe_flags_js_pages():
-    from stock.diag_naver import describe
+def test_decode_prefers_utf8():
     from stock.scan import decode
     assert decode("증권".encode("utf-8")) == "증권" and decode("증권".encode("euc-kr")) == "증권"
-
-    class R:
-        status_code, url = 200, "https://x/y"
-        headers = {"content-type": "text/html; charset=UTF-8"}
-        content = "<html><title>Npay 증권</title><script>self.__next_s=[]</script></html>".encode("utf-8")
-    out = describe(R())
-    assert "Npay 증권" in out and "<tr': 0" in out and "item/main.naver': 0" in out
-    R.headers = {"content-type": "application/json"}
-    R.content = '{"stocks": [{"itemCode": "005930"}]}'.encode("utf-8")
-    assert "005930" in describe(R())
