@@ -25,6 +25,13 @@ jobs:
           cache-dependency-path: requirements-stock.txt
       - run: pip install -r requirements-stock.txt
 
+      # 매일 쌓은 한국 수급 스냅샷(없으면 건너뜀)
+      - uses: actions/checkout@v4
+        with:
+          ref: stock-data
+          path: data
+        continue-on-error: true
+
       - name: Backtest (KR, US)
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -36,3 +43,4 @@ jobs:
           KR="--naver"; US="--yahoo"; if [ "$DEMO" = "true" ]; then KR="--demo"; US="--demo --us"; fi
           python -m stock $KR --backtest --telegram
           python -m stock $US --backtest --telegram
+          python -m stock $KR --evaluate data --telegram

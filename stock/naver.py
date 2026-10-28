@@ -101,6 +101,7 @@ def add_flow(df, flow):
     # 최근 5개 일봉 중 3일 이상 수급이 있으면 사용(당일 수급은 장중·직후엔 비어 있을 수 있어 0으로 채움)
     if j["inst_qty"].iloc[-5:].notna().sum() < min(3, len(j)):
         return df
+    last_real = j["inst_qty"].last_valid_index()
     j[["inst_qty", "foreign_qty"]] = j[["inst_qty", "foreign_qty"]].fillna(0)
     j["inst"] = j["inst_qty"] * j["close"]
     j["foreign"] = j["foreign_qty"] * j["close"]
@@ -108,7 +109,9 @@ def add_flow(df, flow):
         j["individual"] = j["indiv_qty"].fillna(-(j["inst_qty"] + j["foreign_qty"])) * j["close"]
     else:
         j["individual"] = -(j["inst"] + j["foreign"])
-    return j.drop(columns=[c for c in ("inst_qty", "foreign_qty", "indiv_qty") if c in j])
+    out = j.drop(columns=[c for c in ("inst_qty", "foreign_qty", "indiv_qty") if c in j])
+    out.attrs["flow_last"] = f"{last_real:%Y-%m-%d}" if last_real is not None else None  # 당일 수급이 아직 없으면 어제 날짜
+    return out
 
 
 def load_naver(codes, days=250, delay=0.3, log=print, with_flow=True):

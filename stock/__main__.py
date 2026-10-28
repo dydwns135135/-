@@ -15,7 +15,7 @@ from stock.us_themes import US_INDEX, US_THEMES, US_WATCHLIST
 from stock.yahoo import load_yahoo
 from trader import notify
 
-DISCLAIMER = ("※ 점수·흐름·대응은 현재 지표를 요약한 것일 뿐 내일의 예측이 아닙니다. 과거 3년 시험에서 이 점수가 기준선보다 "
+DISCLAIMER = ("※ 점수·흐름·관찰 우선순위는 현재 지표를 요약한 것일 뿐 내일의 예측이 아닙니다. 과거 3년 시험에서 이 점수가 기준선보다 "
               "나은 성과를 냈다는 근거는 확인되지 않았습니다(매주 토요일 '성과 확인' 참고). 참고용이며 투자 권유가 아닙니다. "
               "매수 전 손절 기준을 먼저 정하세요.")
 
@@ -29,6 +29,7 @@ def main(argv=None):
     g.add_argument("--yahoo", action="store_true", help="미국 주식 실데이터(야후 파이낸스)")
     g.add_argument("--csv", metavar="DIR", help="<코드>.csv 폴더")
     ap.add_argument("--backtest", action="store_true", help="성과 확인: 과거 신호 이후 5·10일 수익률 평가(3년치 데이터)")
+    ap.add_argument("--evaluate", metavar="DIR", help="쌓아 둔 한국 수급 스냅샷(DIR/kr/*.csv)으로 수급 버전 시험")
     ap.add_argument("--us", action="store_true", help="미국 테마로 분석(--demo 와 함께 시험용)")
     ap.add_argument("--top", type=int, default=5, help="종목 표시 개수")
     ap.add_argument("--dart", action="store_true", help="DART 공시 확인(환경변수 DART_API_KEY 필요)")
@@ -47,7 +48,7 @@ def main(argv=None):
     print(buf.getvalue())
     if a.telegram:
         head = "🇺🇸 미국" if (a.yahoo or a.us) else "🇰🇷 한국"
-        notify.send((f"📊 {head} 성과 확인\n" if a.backtest else ("🇺🇸 오늘의 미국 종목 분석\n" if (a.yahoo or a.us) else "📈 오늘의 종목 분석\n")) + buf.getvalue())
+        notify.send((f"📊 {head} 성과 확인\n" if a.backtest else f"📊 {head} 수급 버전 시험\n" if a.evaluate else ("🇺🇸 오늘의 미국 종목 분석\n" if (a.yahoo or a.us) else "📈 오늘의 종목 분석\n")) + buf.getvalue())
 
 
 def run(a):
@@ -56,15 +57,19 @@ def run(a):
     if a.yahoo:
         market = load_yahoo([c for m in US_THEMES.values() for c in m], long=a.backtest)
     elif a.demo:
-        n = 800 if a.backtest else 260
+        n = 800 if (a.backtest or a.evaluate) else 260
         market = synthetic_market(n=n, themes=US_THEMES, index=US_INDEX, flow=False) if us else synthetic_market(n=n)
     elif a.naver:
-        market = load_naver([c for m in THEMES.values() for c in m], days=800 if a.backtest else 250, with_flow=not a.backtest)
+        market = load_naver([c for m in THEMES.values() for c in m], days=800 if (a.backtest or a.evaluate) else 250, with_flow=not (a.backtest or a.evaluate))
     elif a.pykrx:
         market = load_pykrx([c for m in THEMES.values() for c in m])
     else:
         market = load_csv_dir(a.csv)
 
+    if a.evaluate:
+        from stock.snapshot import evaluate, load_snapshots
+        print(evaluate(load_snapshots(a.evaluate), market))
+        return
     if a.backtest:
         from stock.backtest import collect, format_report
         print(format_report(collect(market, themes_map)))
@@ -104,7 +109,7 @@ def run(a):
               f"거래량 x{r['vol_ratio']:.1f} | 60일고점 {r['prox60']:.0%} | {fl}"
               + ("" if pd.isna(r["indiv_ratio"]) else f" | 개인 {r['indiv_ratio']:+.1%}"))
         act, why = decide(r, reg, disc.get(r["code"]), kr=not us)
-        print(f"    → 대응: {act}  ({'; '.join(why)})")
+        print(f"    → 관찰 우선순위: {act}  ({'; '.join(why)})")
         print(f"    → 흐름: {r['bias']} ({r['bias_pts']:+d}점: {', '.join(r['bias_why'])})")
     hot = stocks[stocks["stage"].str.startswith("과열")]
     if len(hot):
@@ -119,7 +124,7 @@ def run(a):
             print(f"  {r['name']}({r['theme']}) {r['stage']} · 점수 {r['score']} | 5일 {r['ret5']:+.1%} · 20일 {r['ret20']:+.1%} | "
                   f"{ma} | 거래량 x{r['vol_ratio']:.1f} | 60일고점 {r['prox60']:.0%} | {fl}")
             act, why = decide(r, reg, wdisc.get(r["code"]), kr=not us)
-            print(f"    → 대응: {act}  ({'; '.join(why)})")
+            print(f"    → 관찰 우선순위: {act}  ({'; '.join(why)})")
             print(f"    → 흐름: {r['bias']} ({r['bias_pts']:+d}점: {', '.join(r['bias_why'])})")
     print("\n" + DISCLAIMER)
 
@@ -127,6 +132,9 @@ def run(a):
         os.makedirs(a.out, exist_ok=True)
         themes.to_csv(os.path.join(a.out, "themes.csv"), index=False, encoding="utf-8-sig")
         stocks.to_csv(os.path.join(a.out, "stocks.csv"), index=False, encoding="utf-8-sig")
+        if not us:  # 한국 수급은 과거 이력을 구할 수 없어 매일 저장해 둔다(워크플로가 stock-data 브랜치에 보관)
+            from stock.snapshot import build_snapshot
+            build_snapshot(stocks, market).to_csv(os.path.join(a.out, "snapshot.csv"), index=False, encoding="utf-8-sig")
 
 
 if __name__ == "__main__":
