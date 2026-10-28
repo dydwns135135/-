@@ -15,7 +15,9 @@ from stock.us_themes import US_INDEX, US_THEMES, US_WATCHLIST
 from stock.yahoo import load_yahoo
 from trader import notify
 
-DISCLAIMER = "※ '흐름'은 현재 지표가 기운 방향일 뿐 내일의 예측이 아니며 검증되지 않았습니다. 참고용 분석이며 투자 권유가 아닙니다. 손절 기준을 먼저 정하고, 과열 종목은 추격하지 마세요."
+DISCLAIMER = ("※ 점수·흐름·대응은 현재 지표를 요약한 것일 뿐 내일의 예측이 아닙니다. 과거 3년 시험에서 이 점수가 기준선보다 "
+              "나은 성과를 냈다는 근거는 확인되지 않았습니다(매주 토요일 '성과 확인' 참고). 참고용이며 투자 권유가 아닙니다. "
+              "매수 전 손절 기준을 먼저 정하세요.")
 
 
 def main(argv=None):
@@ -106,7 +108,7 @@ def run(a):
         print(f"    → 흐름: {r['bias']} ({r['bias_pts']:+d}점: {', '.join(r['bias_why'])})")
     hot = stocks[stocks["stage"].str.startswith("과열")]
     if len(hot):
-        print("\n[과열 — 추격 금지] " + ", ".join(f"{r['name']}(5일 {r['ret5']:+.0%})" for _, r in hot.iterrows()))
+        print("\n[과열 — 급등 직후(이후 방향은 불확실, 시험에서 하락 근거 없음)] " + ", ".join(f"{r['name']}(5일 {r['ret5']:+.0%})" for _, r in hot.iterrows()))
     watch = stocks[stocks["code"].isin(watchlist)]
     if len(watch):
         print("\n[관심 종목 현황]")
