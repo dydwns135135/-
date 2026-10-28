@@ -80,3 +80,10 @@ def test_add_flow_tolerates_missing_today():
     j = add_flow(df, flow)
     assert "foreign" in j and j["foreign"].iloc[-1] == 0 and j["foreign"].iloc[-2] == 5 * 105
     assert "foreign" not in add_flow(df, flow.iloc[:-5])  # 최근 수급이 너무 적으면 사용 안 함
+
+
+def test_watchlist_section_in_report(capsys):
+    from stock.__main__ import main
+    main(["--demo"])
+    out = capsys.readouterr().out
+    assert "[관심 종목 현황]" in out and "삼성전자" in out

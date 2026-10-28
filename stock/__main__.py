@@ -8,7 +8,7 @@ from stock.analyze import analyze_themes, decide, market_regime
 from stock.dart import fetch_summaries
 from stock.naver import load_naver
 from stock.data import load_csv_dir, load_pykrx, synthetic_market
-from stock.themes import THEMES
+from stock.themes import THEMES, WATCHLIST
 from trader import notify
 
 DISCLAIMER = "※ 참고용 분석이며 투자 권유가 아닙니다. 손절 기준을 먼저 정하고, 과열 종목은 추격하지 마세요."
@@ -80,6 +80,17 @@ def run(a):
     hot = stocks[stocks["stage"].str.startswith("과열")]
     if len(hot):
         print("\n[과열 — 추격 금지] " + ", ".join(f"{r['name']}(5일 {r['ret5']:+.0%})" for _, r in hot.iterrows()))
+    watch = stocks[stocks["code"].isin(WATCHLIST)]
+    if len(watch):
+        print("\n[관심 종목 현황]")
+        wdisc = fetch_summaries(list(watch["code"])) if a.dart else {}
+        for _, r in watch.iterrows():
+            fl = "수급 n/a" if r["flow_ratio"] is None else f"수급 {r['flow_ratio']:+.1%}"
+            ma = "20일선 위" if r["above_ma20"] else "20일선 아래"
+            print(f"  {r['name']}({r['theme']}) {r['stage']} · 점수 {r['score']} | 5일 {r['ret5']:+.1%} · 20일 {r['ret20']:+.1%} | "
+                  f"{ma} | 거래량 x{r['vol_ratio']:.1f} | 60일고점 {r['prox60']:.0%} | {fl}")
+            act, why = decide(r, reg, wdisc.get(r["code"]))
+            print(f"    → 대응: {act}  ({'; '.join(why)})")
     print("\n" + DISCLAIMER)
 
     if a.out:
