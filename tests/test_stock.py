@@ -432,3 +432,19 @@ def test_scan_cli_end_to_end(capsys, monkeypatch):
         m.main(["--scan", "--demo"])
     with pytest.raises(SystemExit):
         m.main([])
+
+
+def test_decode_prefers_utf8_and_describe_flags_js_pages():
+    from stock.diag_naver import describe
+    from stock.scan import decode
+    assert decode("증권".encode("utf-8")) == "증권" and decode("증권".encode("euc-kr")) == "증권"
+
+    class R:
+        status_code, url = 200, "https://x/y"
+        headers = {"content-type": "text/html; charset=UTF-8"}
+        content = "<html><title>Npay 증권</title><script>self.__next_s=[]</script></html>".encode("utf-8")
+    out = describe(R())
+    assert "Npay 증권" in out and "<tr': 0" in out and "item/main.naver': 0" in out
+    R.headers = {"content-type": "application/json"}
+    R.content = '{"stocks": [{"itemCode": "005930"}]}'.encode("utf-8")
+    assert "005930" in describe(R())

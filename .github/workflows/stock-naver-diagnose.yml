@@ -1,0 +1,17 @@
+name: "stock-naver-diagnose (네이버 한국 시장 데이터 출처 진단)"
+
+# 네이버 금융 페이지·JSON 후보 주소의 실제 응답 형태를 한 번에 로그로 출력한다. 수동 실행 전용, 주문·알림 없음.
+on:
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests lxml
+      - run: python -m stock.diag_naver
