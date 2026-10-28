@@ -47,6 +47,48 @@ def parse_flow(html):
     return pd.DataFrame(rows, index=["inst_qty", "foreign_qty"]).T.sort_index()
 
 
+def parse_flow_json(data):
+    """m.stock.naver.com/api/stock/<코드>/trend JSON → DataFrame(inst_qty, foreign_qty, indiv_qty)."""
+    rows = {}
+    for d in data:
+        inst, fgn, ind = _num(str(d.get("organPureBuyQuant", ""))), _num(str(d.get("foreignerPureBuyQuant", ""))), \
+            _num(str(d.get("individualPureBuyQuant", "")))
+        day = str(d.get("bizdate", ""))
+        if inst is not None and fgn is not None and re.fullmatch(r"\d{8}", day):
+            rows[pd.Timestamp(day)] = (inst, fgn, ind if ind is not None else -(inst + fgn))
+    if not rows:
+        raise ValueError("JSON에 수급 값 없음")
+    return pd.DataFrame(rows, index=["inst_qty", "foreign_qty", "indiv_qty"]).T.sort_index()
+
+
+def _snippet(text, n=120):
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text))[:n]
+
+
+def fetch_flow(code):
+    """수급 조회: 모바일 JSON → 실패 시 PC 페이지 표. 둘 다 실패하면 응답 일부를 오류에 담는다."""
+    errs = []
+    try:
+        r = requests.get(f"https://m.stock.naver.com/api/stock/{code}/trend", params={"pageSize": 30},
+                         headers={**HEAD, "Referer": "https://m.stock.naver.com/"}, timeout=20)
+        r.raise_for_status()
+        return parse_flow_json(r.json())
+    except Exception as e:
+        errs.append(f"json {type(e).__name__}")
+    try:
+        pages = []
+        for p in (1, 2):
+            r = _get("https://finance.naver.com/item/frgn.naver", code=code, page=p)
+            r.encoding = "euc-kr"
+            pages.append(parse_flow(r.text))
+        return pd.concat(pages)
+    except Exception as e:
+        body = locals().get("r")
+        info = f"HTTP {body.status_code} len={len(body.text)} '{_snippet(body.text)}'" if body is not None else ""
+        errs.append(f"html {type(e).__name__} {info}")
+    raise ValueError(" / ".join(errs))
+
+
 def _get(url, **params):
     r = requests.get(url, params=params, headers=HEAD, timeout=20)
     r.raise_for_status()
@@ -61,8 +103,11 @@ def add_flow(df, flow):
     j[["inst_qty", "foreign_qty"]] = j[["inst_qty", "foreign_qty"]].fillna(0)
     j["inst"] = j["inst_qty"] * j["close"]
     j["foreign"] = j["foreign_qty"] * j["close"]
-    j["individual"] = -(j["inst"] + j["foreign"])
-    return j.drop(columns=["inst_qty", "foreign_qty"])
+    if "indiv_qty" in j:
+        j["individual"] = j["indiv_qty"].fillna(-(j["inst_qty"] + j["foreign_qty"])) * j["close"]
+    else:
+        j["individual"] = -(j["inst"] + j["foreign"])
+    return j.drop(columns=[c for c in ("inst_qty", "foreign_qty", "indiv_qty") if c in j])
 
 
 def load_naver(codes, days=250, delay=0.3, log=print):
@@ -78,14 +123,9 @@ def load_naver(codes, days=250, delay=0.3, log=print):
             log(f"일봉 실패 {code}: {type(e).__name__}: {str(e)[:80]}")
             continue
         try:
-            pages = []
-            for p in (1, 2):
-                r = _get("https://finance.naver.com/item/frgn.naver", code=code, page=p)
-                r.encoding = "euc-kr"
-                pages.append(parse_flow(r.text))
-            df = add_flow(df, pd.concat(pages))
+            df = add_flow(df, fetch_flow(code))
         except Exception as e:
-            log(f"수급 실패 {code}: {type(e).__name__}: {str(e)[:80]} (가격만 분석)")
+            log(f"수급 실패 {code}: {type(e).__name__}: {str(e)[:300]} (가격만 분석)")
         out[code] = df
         time.sleep(delay)
     if len(out) < 2:

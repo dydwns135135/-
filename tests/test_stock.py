@@ -56,3 +56,16 @@ def test_naver_parsers_and_flow_merge():
     j = add_flow(df, fl)
     assert j["inst"].iloc[-1] == 1000 * 115 and j["individual"].iloc[-1] == -(1000 * 115 - 200 * 115)
     assert "inst" not in add_flow(df, fl.iloc[:0]).columns  # 수급이 비면 가격만
+
+
+def test_naver_flow_json_prefers_real_individual():
+    from stock.naver import add_flow, parse_chart, parse_flow_json
+    df = parse_chart('<item data="20261027|100|110|90|105|1000" /><item data="20261028|105|120|100|115|2000" />')
+    data = [{"bizdate": "20261028", "organPureBuyQuant": "+1,000", "foreignerPureBuyQuant": "-200", "individualPureBuyQuant": "-700"},
+            {"bizdate": "20261027", "organPureBuyQuant": "500", "foreignerPureBuyQuant": "300", "individualPureBuyQuant": "-900"}]
+    j = add_flow(df, parse_flow_json(data))
+    assert j["inst"].iloc[-1] == 1000 * 115 and j["foreign"].iloc[-1] == -200 * 115
+    assert j["individual"].iloc[-1] == -700 * 115  # 근사(-(기관+외국인))가 아니라 실제 개인 값
+    import pytest
+    with pytest.raises(ValueError):
+        parse_flow_json([{"bizdate": "x"}])
