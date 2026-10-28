@@ -35,7 +35,7 @@ jobs:
           DEMO: ${{ inputs.demo }}
         run: |
           if [ "${{ github.event_name }}" = "schedule" ] && [ "$ENABLED" != "true" ]; then echo "STOCK_ENABLED!=true, 건너뜀"; exit 0; fi
-          SRC="--pykrx"; if [ "$DEMO" = "true" ]; then SRC="--demo"; fi
+          SRC="--naver"; if [ "$DEMO" = "true" ]; then SRC="--demo"; fi
           DART=""; if [ -n "$DART_API_KEY" ]; then DART="--dart"; fi
           python -m stock $SRC $DART --telegram --out result
 

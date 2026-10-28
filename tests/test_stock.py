@@ -39,3 +39,23 @@ def test_dart_classify_and_decide():
     strong = {**r, "stage": "선점 후보", "score": 80, "ret20": 0.05, "both_buy": True}
     assert decide(strong, reg, summarize(["공급계약체결"]))[0] == "즉시 진입"
     assert decide(strong, {"points": 1, "label": "약세(보수)"}, summarize(["공급계약체결"]))[0] == "분할 진입"
+
+
+def test_naver_parsers_and_flow_merge():
+    import pandas as pd
+    from stock.naver import add_flow, parse_chart, parse_flow
+    xml = ('<chartdata><chart><item data="20261027|100|110|90|105|1000" />'
+           '<item data="20261028|105|120|100|115|2000" /></chart></chartdata>')
+    df = parse_chart(xml)
+    assert list(df.index.strftime("%Y%m%d")) == ["20261027", "20261028"] and df["close"].iloc[-1] == 115
+    html = ("<table><tr><th>날짜</th><th>종가</th><th>기관</th><th>외국인</th></tr>"
+            "<tr><th></th><th></th><th>순매매량</th><th>순매매량</th></tr></table>")
+    html = ("<table><thead><tr><th rowspan=2>날짜</th><th rowspan=2>종가</th><th colspan=1>기관</th><th colspan=1>외국인</th></tr>"
+            "<tr><th>순매매량</th><th>순매매량</th></tr></thead><tbody>"
+            "<tr><td>2026.10.28</td><td>115</td><td>+1,000</td><td>-200</td></tr>"
+            "<tr><td>2026.10.27</td><td>105</td><td>500</td><td>300</td></tr></tbody></table>")
+    fl = parse_flow(html)
+    assert fl.loc["2026-10-28", "inst_qty"] == 1000 and fl.loc["2026-10-28", "foreign_qty"] == -200
+    j = add_flow(df, fl)
+    assert j["inst"].iloc[-1] == 1000 * 115 and j["individual"].iloc[-1] == -(1000 * 115 - 200 * 115)
+    assert "inst" not in add_flow(df, fl.iloc[:0]).columns  # 수급이 비면 가격만
