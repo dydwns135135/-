@@ -87,3 +87,13 @@ def test_watchlist_section_in_report(capsys):
     main(["--demo"])
     out = capsys.readouterr().out
     assert "[관심 종목 현황]" in out and "삼성전자" in out
+
+
+def test_lean_labels():
+    from stock.analyze import lean
+    up = lean(True, True, True, 0.05, 1.5, True, False, False)
+    assert up[0] == "상승 우세" and up[1] == 6
+    dn = lean(False, False, False, -0.05, 1.5, False, True, False)
+    assert dn[0] == "하락 우세" and dn[1] == -6
+    assert lean(True, False, True, 0.0, 1.0, False, False, False)[0] == "중립"
+    assert lean(True, True, True, 0.3, 2.0, True, False, True)[0].startswith("상승 흐름(과열")
