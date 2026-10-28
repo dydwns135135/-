@@ -11,7 +11,7 @@ from stock.data import load_csv_dir, load_pykrx, synthetic_market
 from stock.themes import THEMES, WATCHLIST
 from trader import notify
 
-DISCLAIMER = "※ 참고용 분석이며 투자 권유가 아닙니다. 손절 기준을 먼저 정하고, 과열 종목은 추격하지 마세요."
+DISCLAIMER = "※ '흐름'은 현재 지표가 기운 방향일 뿐 내일의 예측이 아니며 검증되지 않았습니다. 참고용 분석이며 투자 권유가 아닙니다. 손절 기준을 먼저 정하고, 과열 종목은 추격하지 마세요."
 
 
 def main(argv=None):
@@ -77,6 +77,7 @@ def run(a):
               + ("" if r["indiv_ratio"] is None else f" | 개인 {r['indiv_ratio']:+.1%}"))
         act, why = decide(r, reg, disc.get(r["code"]))
         print(f"    → 대응: {act}  ({'; '.join(why)})")
+        print(f"    → 흐름: {r['bias']} ({r['bias_pts']:+d}점: {', '.join(r['bias_why'])})")
     hot = stocks[stocks["stage"].str.startswith("과열")]
     if len(hot):
         print("\n[과열 — 추격 금지] " + ", ".join(f"{r['name']}(5일 {r['ret5']:+.0%})" for _, r in hot.iterrows()))
@@ -91,6 +92,7 @@ def run(a):
                   f"{ma} | 거래량 x{r['vol_ratio']:.1f} | 60일고점 {r['prox60']:.0%} | {fl}")
             act, why = decide(r, reg, wdisc.get(r["code"]))
             print(f"    → 대응: {act}  ({'; '.join(why)})")
+            print(f"    → 흐름: {r['bias']} ({r['bias_pts']:+d}점: {', '.join(r['bias_why'])})")
     print("\n" + DISCLAIMER)
 
     if a.out:

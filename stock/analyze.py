@@ -19,6 +19,24 @@ def market_regime(idx_df):
     return {"label": label, "points": pts, "ret20": c.iloc[-1] / c.iloc[-21] - 1}
 
 
+def lean(above20, aligned, slope_up, ret5, vol_ratio, both_buy, both_sell, overheated):
+    """현재 흐름이 상승/하락 어느 쪽으로 기울었는지 요약(예측 아님). 6개 신호 각 ±1, 합 ±3 이상이면 한쪽 우세."""
+    sig = [("종가>20일선" if above20 else "종가<20일선", 1 if above20 else -1),
+           ("20일선>60일선" if aligned else "20일선<60일선", 1 if aligned else -1),
+           ("20일선 상승" if slope_up else "20일선 하락", 1 if slope_up else -1),
+           (f"5일 {ret5:+.1%}", 1 if ret5 > 0 else -1 if ret5 < 0 else 0)]
+    if both_buy or both_sell:
+        sig.append(("외국인·기관 동반 순매수" if both_buy else "외국인·기관 동반 순매도", 1 if both_buy else -1))
+    if vol_ratio > 1.3 and ret5 != 0:
+        up = ret5 > 0
+        sig.append((f"거래량 x{vol_ratio:.1f} 동반 " + ("상승" if up else "하락"), 1 if up else -1))
+    pts = sum(v for _, v in sig)
+    label = "상승 우세" if pts >= 3 else "하락 우세" if pts <= -3 else "중립"
+    if overheated and pts > 0:
+        label = "상승 흐름(과열·조정 위험)"
+    return label, pts, [n for n, _ in sig]
+
+
 def analyze_stock(df):
     """한 종목의 지표·점수. 점수 100점 = 추세25 + 돌파근접25 + 거래량20 + 수축10 + 수급20."""
     c, h, l, v = df["close"], df["high"], df["low"], df["volume"]
@@ -68,7 +86,12 @@ def analyze_stock(df):
     if "individual" in df.columns:
         indiv_ratio = df["individual"].iloc[-5:].sum() / (c * v).iloc[-5:].sum()
     both_buy = flow_ratio is not None and df["foreign"].iloc[-5:].sum() > 0 and df["inst"].iloc[-5:].sum() > 0
-    return {"score": round(score, 1), "stage": stage, "indiv_ratio": indiv_ratio, "both_buy": bool(both_buy), "ret5": ret5, "ret20": ret20, "ext": ext,
+    both_sell = flow_ratio is not None and df["foreign"].iloc[-5:].sum() < 0 and df["inst"].iloc[-5:].sum() < 0
+    bias, bias_pts, bias_why = lean(
+        above20=last > ma20.iloc[-1], aligned=ma20.iloc[-1] > ma60.iloc[-1], slope_up=ma20.iloc[-1] > ma20.iloc[-6],
+        ret5=ret5, vol_ratio=vol_ratio, both_buy=both_buy, both_sell=both_sell, overheated=overheated)
+    return {"bias": bias, "bias_pts": bias_pts, "bias_why": bias_why,
+            "score": round(score, 1), "stage": stage, "indiv_ratio": indiv_ratio, "both_buy": bool(both_buy), "ret5": ret5, "ret20": ret20, "ext": ext,
             "vol_ratio": vol_ratio, "prox60": prox, "flow_ratio": flow_ratio,
             "above_ma20": bool(last > ma20.iloc[-1]), "value5": float((c * v).iloc[-5:].sum()),
             "value_prev": float((c * v).iloc[-25:-5].sum() / 4)}
