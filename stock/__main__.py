@@ -55,7 +55,7 @@ def main(argv=None):
     print(buf.getvalue())
     if a.telegram:
         head = "🇺🇸 미국" if (a.yahoo or a.us) else "🇰🇷 한국"
-        notify.send(("🔎 한국 시장 훑기\n" if a.scan else f"📊 {head} 성과 확인\n" if a.backtest else f"📊 {head} 수급 버전 시험\n" if a.evaluate else ("🇺🇸 오늘의 미국 종목 분석\n" if (a.yahoo or a.us) else "📈 오늘의 종목 분석\n")) + buf.getvalue())
+        notify.send(("🔎 한국 시장 훑기\n" if a.scan else f"📊 {head} 성과 확인\n" if a.backtest else f"📊 {head} 쌓은 데이터 시험(수급·훑기)\n" if a.evaluate else ("🇺🇸 오늘의 미국 종목 분석\n" if (a.yahoo or a.us) else "📈 오늘의 종목 분석\n")) + buf.getvalue())
 
 
 def run(a):
@@ -74,15 +74,22 @@ def run(a):
         n = 800 if (a.backtest or a.evaluate) else 260
         market = synthetic_market(n=n, themes=US_THEMES, index=US_INDEX, flow=False) if us else synthetic_market(n=n)
     elif a.naver:
-        market = load_naver([c for m in THEMES.values() for c in m], days=800 if (a.backtest or a.evaluate) else 250, with_flow=not (a.backtest or a.evaluate))
+        codes = [c for m in THEMES.values() for c in m]
+        if a.evaluate:  # 쌓아 둔 훑기 스냅샷에 나온 종목 가격도 필요하다
+            from stock.snapshot import scan_codes
+            codes = sorted(set(codes) | set(scan_codes(a.evaluate)))
+        market = load_naver(codes, days=800 if (a.backtest or a.evaluate) else 250, with_flow=not (a.backtest or a.evaluate))
     elif a.pykrx:
         market = load_pykrx([c for m in THEMES.values() for c in m])
     else:
         market = load_csv_dir(a.csv)
 
     if a.evaluate:
-        from stock.snapshot import evaluate, load_snapshots
+        from stock.snapshot import evaluate, evaluate_scan, load_scan_snapshots, load_snapshots
         print(evaluate(load_snapshots(a.evaluate), market))
+        scan_snap = load_scan_snapshots(a.evaluate)
+        if not scan_snap.empty:
+            print("\n" + evaluate_scan(scan_snap, market))
         return
     if a.backtest:
         from stock.backtest import collect, format_report
@@ -92,6 +99,7 @@ def run(a):
         idx_name = "받은 종목 평균(S&P500 대용)"
     reg = market_regime(market[idx_key])
     themes, stocks = analyze_themes(market, themes_map)
+    stocks_all = stocks
     if scan_stats:  # 같은 종목이 여러 테마에 있으면 점수가 높은 한 줄만
         stocks = stocks.sort_values("score", ascending=False).drop_duplicates("code").reset_index(drop=True)
 
@@ -157,7 +165,10 @@ def run(a):
         os.makedirs(a.out, exist_ok=True)
         themes.to_csv(os.path.join(a.out, "themes.csv"), index=False, encoding="utf-8-sig")
         stocks.to_csv(os.path.join(a.out, "stocks.csv"), index=False, encoding="utf-8-sig")
-        if not us:  # 한국 수급은 과거 이력을 구할 수 없어 매일 저장해 둔다(워크플로가 stock-data 브랜치에 보관)
+        if scan_stats:  # 훑기 결과는 소속 테마와 함께 매일 저장해 둔다(워크플로가 stock-data 브랜치의 scan/ 에 보관)
+            from stock.snapshot import build_scan_snapshot
+            build_scan_snapshot(stocks_all, themes, market).to_csv(os.path.join(a.out, "scan_snapshot.csv"), index=False, encoding="utf-8-sig")
+        elif not us:  # 한국 수급은 과거 이력을 구할 수 없어 매일 저장해 둔다(워크플로가 stock-data 브랜치의 kr/ 에 보관)
             from stock.snapshot import build_snapshot
             build_snapshot(stocks, market).to_csv(os.path.join(a.out, "snapshot.csv"), index=False, encoding="utf-8-sig")
 

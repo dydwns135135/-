@@ -432,7 +432,7 @@ def test_build_scan_falls_back_to_ranking_and_reports_tried_urls():
         build_scan(delay=0, get=lambda path, **p: (_ for _ in ()).throw(RuntimeError("HTTP500")), log=lambda m: None)
 
 
-def test_scan_cli_end_to_end(capsys, monkeypatch):
+def test_scan_cli_end_to_end(capsys, monkeypatch, tmp_path):
     import stock.__main__ as m
     import stock.scan as scan
     from stock.data import synthetic_market
@@ -441,8 +441,12 @@ def test_scan_cli_end_to_end(capsys, monkeypatch):
     mk = synthetic_market(themes=themes, index="KOSPI")
     monkeypatch.setattr(scan, "build_scan", lambda **k: (themes, {"themes_total": 120, "themes_picked": 2, "themes_used": 2, "source": "theme", "member_errors": {}, "stocks": 6}))
     monkeypatch.setattr(m, "load_naver", lambda codes, **k: mk)
-    m.main(["--scan"])
+    m.main(["--scan", "--out", str(tmp_path)])
     out = capsys.readouterr().out
+    import pandas as pd
+    snap = pd.read_csv(tmp_path / "scan_snapshot.csv", dtype={"code": str})
+    assert snap["code"].is_unique and len(snap) == 6 and {"themes", "best_theme", "theme_rank", "theme_score"} <= set(snap.columns)
+    assert (tmp_path / "themes.csv").exists() and not (tmp_path / "snapshot.csv").exists()  # 훑기는 scan_snapshot 만 저장
     assert "[훑기] 네이버 테마 120개 중 오늘 오르는 2개" in out and "테마A" in out and "데이터 수집 실패 0개" in out
     import re
     names = re.findall(r"^  (\S+)\(테마[AB]\) ", out, flags=re.M)  # 선점 후보·관심 종목 줄
@@ -457,3 +461,64 @@ def test_scan_cli_end_to_end(capsys, monkeypatch):
 def test_decode_prefers_utf8():
     from stock.scan import decode
     assert decode("증권".encode("utf-8")) == "증권" and decode("증권".encode("euc-kr")) == "증권"
+
+
+def _scan_universe():
+    from stock.data import synthetic_market
+    themes = {"테마A": {"000001": "가", "000002": "나", "000003": "다", "000004": "라"},
+              "테마B": {"000003": "다", "000005": "마", "000006": "바"},      # 000003 은 두 테마에 걸침
+              "테마C": {"000007": "사", "000008": "아", "000009": "자", "000010": "차"}}
+    return themes, synthetic_market(themes=themes, index="KOSPI")
+
+
+def test_build_scan_snapshot_membership_and_best_theme(tmp_path):
+    from stock.analyze import analyze_themes
+    from stock.snapshot import SCAN_COLS, build_scan_snapshot, load_scan_snapshots, scan_codes
+    themes, mk = _scan_universe()
+    th, rows = analyze_themes(mk, themes)
+    snap = build_scan_snapshot(rows, th, mk)
+    assert list(snap.columns) == SCAN_COLS and snap["code"].is_unique and len(snap) == 10  # 겹친 종목도 한 줄
+    shared = snap[snap["code"] == "000003"].iloc[0]
+    assert set(shared["themes"].split("|")) == {"테마A", "테마B"}
+    rank = {t: i + 1 for i, t in enumerate(th["theme"])}
+    assert shared["best_theme"] == min(["테마A", "테마B"], key=rank.get) and shared["theme_rank"] == rank[shared["best_theme"]]
+    (tmp_path / "scan" / "themes").mkdir(parents=True)
+    snap.to_csv(tmp_path / "scan" / "2026-10-28.csv", index=False)
+    th.to_csv(tmp_path / "scan" / "themes" / "2026-10-28.csv", index=False)  # 테마 순위 파일은 읽지 않는다
+    back = load_scan_snapshots(tmp_path)
+    assert len(back) == 10 and back["code"].str.len().eq(6).all() and scan_codes(tmp_path) == sorted(snap["code"])
+    assert scan_codes(tmp_path / "없음") == []
+
+
+def test_group_excess_and_evaluate_scan_detect_planted_signal():
+    import numpy as np
+    import pandas as pd
+    from stock.snapshot import evaluate_scan, group_excess
+    rng = np.random.default_rng(3)
+    days = pd.bdate_range("2025-01-01", periods=420)
+    market, rows = {}, []
+    for i in range(16):
+        c = 100 * np.cumprod(1 + rng.normal(0, 0.01, 420))
+        market[f"{i:06d}"] = pd.DataFrame({"open": c, "high": c, "low": c, "close": c, "volume": 1.0}, index=days)
+    for t in range(60, 300):
+        fut = {code: df["close"].iloc[t + 10] / df["close"].iloc[t] - 1 for code, df in market.items()}
+        order = sorted(fut, key=fut.get, reverse=True)           # 훑기가 '미래를 아는' 세계: 상위 종목이 실제로 더 오른다
+        for rank_, code in enumerate(order):
+            rows.append({"date": f"{days[t]:%Y-%m-%d}", "code": code, "name": code, "theme": "T", "close": 1.0,
+                         "score": 100 - rank_ + rng.normal(0, 0.1), "stage": "선점 후보" if rank_ < 3 else "관망", "bias": "중립", "bias_pts": 0,
+                         "ret5": 0, "ret20": 0, "vol_ratio": 1, "prox60": 1, "flow_ratio": 0.0, "indiv_ratio": 0, "both_buy": False,
+                         "foreign5": 0, "inst5": 0, "indiv5": 0, "flow_last": f"{days[t]:%Y-%m-%d}", "themes": "T",
+                         "best_theme": "T", "theme_rank": 1 + rank_ // 4, "theme_score": 100 - rank_ // 4})
+    snap = pd.DataFrame(rows)
+    out = evaluate_scan(snap, market)
+    assert "점수 상위 3" in out and "선점 후보" in out and "상위 3테마" in out and "의미 있음" in out
+    from stock.snapshot import attach_returns
+    d = attach_returns(snap, market)
+    ex = group_excess(d, d["stage"] == "선점 후보", 10)
+    assert ex is not None and ex[0] > 0.01 and ex[2] >= 2
+    short = d[d["date"] < "2025-04-01"]
+    assert group_excess(short, short["stage"] == "선점 후보", 10) is None  # 표본이 짧으면 None
+    assert "아직 부족" in evaluate_scan(snap[snap["date"] <= f"{days[70]:%Y-%m-%d}"], market)
+    assert "아직 없습니다" in evaluate_scan(snap.iloc[:0], market)
+    stale = snap.assign(flow_last="2000-01-01")                      # 수급이 늦은 날은 모두 제외
+    assert "확정된 날이 아직 0일" in evaluate_scan(stale, market)
