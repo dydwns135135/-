@@ -111,7 +111,7 @@ def add_flow(df, flow):
     return j.drop(columns=[c for c in ("inst_qty", "foreign_qty", "indiv_qty") if c in j])
 
 
-def load_naver(codes, days=250, delay=0.3, log=print):
+def load_naver(codes, days=250, delay=0.3, log=print, with_flow=True):
     out = {}
     idx = parse_chart(_get("https://fchart.stock.naver.com/sise.nhn", symbol="KOSPI", timeframe="day",
                            count=days, requestType=0).text)
@@ -122,6 +122,10 @@ def load_naver(codes, days=250, delay=0.3, log=print):
                                   count=days, requestType=0).text)
         except Exception as e:
             log(f"일봉 실패 {code}: {type(e).__name__}: {str(e)[:80]}")
+            continue
+        if not with_flow:  # 성과 확인(과거 가격 기반)에서는 수급을 쓰지 않는다
+            out[code] = df
+            time.sleep(delay)
             continue
         try:
             flow = fetch_flow(code)

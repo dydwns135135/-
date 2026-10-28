@@ -22,7 +22,7 @@ def parse_chart(data):
     return df.astype(float).sort_index()
 
 
-def parse_stooq(text):
+def parse_stooq(text, keep=260):
     """Stooq 일봉 CSV(Date,Open,High,Low,Close,Volume) → DataFrame."""
     from io import StringIO
 
@@ -33,7 +33,7 @@ def parse_stooq(text):
     df = df[["open", "high", "low", "close", "volume"]].dropna().sort_index()
     if df.empty:
         raise ValueError("Stooq 응답에 데이터 없음")
-    return df.astype(float).tail(260)
+    return df.astype(float).tail(keep)
 
 
 def _stooq_sym(sym):
@@ -60,10 +60,10 @@ def fetch_yahoo(sym, days="1y", tries=3, sleep=time.sleep):
     raise RuntimeError(f"야후 실패({last})")
 
 
-def fetch_stooq(sym):
+def fetch_stooq(sym, keep=260):
     r = requests.get("https://stooq.com/q/d/l/", params={"s": _stooq_sym(sym), "i": "d"}, headers=HEAD, timeout=8)
     r.raise_for_status()
-    return parse_stooq(r.text)
+    return parse_stooq(r.text, keep)
 
 
 def _find_rows(j):
@@ -83,7 +83,7 @@ def _find_rows(j):
     return None
 
 
-def parse_naver_us(j):
+def parse_naver_us(j, keep=260):
     """네이버 해외 일봉 JSON → DataFrame. 필드: localDate, openPrice, highPrice, lowPrice, closePrice, accumulatedTradingVolume."""
     recs = {}
     for d in _find_rows(j) or []:
@@ -94,13 +94,13 @@ def parse_naver_us(j):
             continue
     if not recs:
         raise ValueError("네이버 해외 응답에 일봉 없음")
-    return pd.DataFrame(recs, index=["open", "high", "low", "close", "volume"]).T.sort_index().tail(260)
+    return pd.DataFrame(recs, index=["open", "high", "low", "close", "volume"]).T.sort_index().tail(keep)
 
 
-def _naver_urls(code, end):
+def _naver_urls(code, end, span=420):
     """후보 주소(응답 형식이 달라도 _find_rows 가 읽는다). 날짜 형식이 확실하지 않아 변형을 모두 시도한다."""
     base = f"https://api.stock.naver.com/chart/foreign/item/{code}/day"
-    st = end - pd.Timedelta(days=420)
+    st = end - pd.Timedelta(days=span)
     yield base, {"startDateTime": st.strftime("%Y%m%d0000"), "endDateTime": end.strftime("%Y%m%d2359")}
     yield base, {"startDateTime": st.strftime("%Y%m%d000000"), "endDateTime": end.strftime("%Y%m%d235959")}
     yield base, {}
@@ -111,7 +111,7 @@ def _naver_urls(code, end):
 NAVER_SUFFIXES = (".O", ".N", ".P", ".A", ".K", "")  # 나스닥, 뉴욕, 아카, 아멕스, ETF, 접미사 없음
 
 
-def fetch_naver_us(sym):
+def fetch_naver_us(sym, span=420, keep=260):
     """네이버 해외주식 일봉. 거래소 접미사와 후보 주소를 차례로 시도하고, 성공한 조합을 기억해 다음 종목에서 먼저 쓴다."""
     end = pd.Timestamp.today().normalize()
     errs = []
@@ -119,7 +119,7 @@ def fetch_naver_us(sym):
     if _NAVER_OK:  # 앞서 성공한 후보 주소 번호를 먼저
         combos.sort(key=lambda c: c[1] != _NAVER_OK[0])
     for suf, k in combos:
-        url, params = list(_naver_urls(sym + suf, end))[k]
+        url, params = list(_naver_urls(sym + suf, end, span))[k]
         tag = f"{suf or '-'}#{k + 1}"
         r = None
         try:
@@ -127,7 +127,7 @@ def fetch_naver_us(sym):
             if r.status_code >= 400:
                 errs.append(f"{tag} HTTP{r.status_code}")
                 continue
-            df = parse_naver_us(r.json())
+            df = parse_naver_us(r.json(), keep)
             _NAVER_OK[:] = [k]
             NAVER_HIT[sym] = f"{suf or '-'}#{k + 1}"
             return df
@@ -140,12 +140,12 @@ _NAVER_OK = []
 NAVER_HIT = {}  # 종목 → 성공한 접미사#후보번호(진단용)
 
 
-def fetch(sym, days="1y", log=print):
+def fetch(sym, days="1y", log=print, span=420, keep=260):
     """네이버(GitHub 서버에서 접속되는 것으로 확인된 곳) → 야후 → Stooq 순서. 모두 실패하면 오류를 모아 올린다."""
     errs = []
     if sym != "^GSPC":  # 네이버는 지수 주소를 몰라 지수는 SPY로 대체하게 둔다
         try:
-            return fetch_naver_us(sym)
+            return fetch_naver_us(sym, span, keep)
         except Exception as e:
             errs.append(str(e)[:400])
     try:
@@ -156,7 +156,7 @@ def fetch(sym, days="1y", log=print):
     except Exception as e:
         errs.append(str(e)[:60])
     try:
-        df = fetch_stooq(sym)
+        df = fetch_stooq(sym, keep)
         log(f"{sym}: Stooq 사용")
         return df
     except Exception as e:
@@ -173,11 +173,12 @@ def proxy_index(frames):
     return df
 
 
-def load_yahoo(tickers, delay=0.8, log=print):
+def load_yahoo(tickers, delay=0.8, log=print, long=False):
+    kw = dict(days="3y", span=1100, keep=800) if long else {}  # long=True: 성과 확인용 3년치
     out, errs = {}, []
     for t in tickers:
         try:
-            out[t] = fetch(t, log=log)
+            out[t] = fetch(t, log=log, **kw)
         except Exception as e:
             errs.append(f"{t}: {str(e)[:300]}")
             log(f"일봉 실패 {errs[-1]}")
@@ -189,7 +190,7 @@ def load_yahoo(tickers, delay=0.8, log=print):
     idx = None
     for ref in ("SPY", "QQQ"):
         try:
-            idx = fetch(ref, log=log)
+            idx = fetch(ref, log=log, **kw)
             break
         except Exception as e:
             log(f"지수 {ref} 실패: {str(e)[:150]}")

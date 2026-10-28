@@ -26,6 +26,7 @@ def main(argv=None):
     g.add_argument("--naver", action="store_true", help="네이버 금융 실데이터(해외 서버에서도 가능)")
     g.add_argument("--yahoo", action="store_true", help="미국 주식 실데이터(야후 파이낸스)")
     g.add_argument("--csv", metavar="DIR", help="<코드>.csv 폴더")
+    ap.add_argument("--backtest", action="store_true", help="성과 확인: 과거 신호 이후 5·10일 수익률 평가(3년치 데이터)")
     ap.add_argument("--us", action="store_true", help="미국 테마로 분석(--demo 와 함께 시험용)")
     ap.add_argument("--top", type=int, default=5, help="종목 표시 개수")
     ap.add_argument("--dart", action="store_true", help="DART 공시 확인(환경변수 DART_API_KEY 필요)")
@@ -43,23 +44,29 @@ def main(argv=None):
         raise
     print(buf.getvalue())
     if a.telegram:
-        notify.send(("🇺🇸 오늘의 미국 종목 분석\n" if (a.yahoo or a.us) else "📈 오늘의 종목 분석\n") + buf.getvalue())
+        head = "🇺🇸 미국" if (a.yahoo or a.us) else "🇰🇷 한국"
+        notify.send((f"📊 {head} 성과 확인\n" if a.backtest else ("🇺🇸 오늘의 미국 종목 분석\n" if (a.yahoo or a.us) else "📈 오늘의 종목 분석\n")) + buf.getvalue())
 
 
 def run(a):
     us = a.yahoo or a.us
     themes_map, watchlist, idx_key, idx_name = (US_THEMES, US_WATCHLIST, US_INDEX, "S&P500") if us else (THEMES, WATCHLIST, "KOSPI", "KOSPI")
     if a.yahoo:
-        market = load_yahoo([c for m in US_THEMES.values() for c in m])
+        market = load_yahoo([c for m in US_THEMES.values() for c in m], long=a.backtest)
     elif a.demo:
-        market = synthetic_market(themes=US_THEMES, index=US_INDEX, flow=False) if us else synthetic_market()
+        n = 800 if a.backtest else 260
+        market = synthetic_market(n=n, themes=US_THEMES, index=US_INDEX, flow=False) if us else synthetic_market(n=n)
     elif a.naver:
-        market = load_naver([c for m in THEMES.values() for c in m])
+        market = load_naver([c for m in THEMES.values() for c in m], days=800 if a.backtest else 250, with_flow=not a.backtest)
     elif a.pykrx:
         market = load_pykrx([c for m in THEMES.values() for c in m])
     else:
         market = load_csv_dir(a.csv)
 
+    if a.backtest:
+        from stock.backtest import collect, format_report
+        print(format_report(collect(market, themes_map)))
+        return
     if market[idx_key].attrs.get("proxy"):
         idx_name = "받은 종목 평균(S&P500 대용)"
     reg = market_regime(market[idx_key])

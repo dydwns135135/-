@@ -145,9 +145,9 @@ def test_us_sources_order_and_parsers(monkeypatch):
 
     # 네이버·야후가 모두 실패하면 Stooq
     csv = "Date,Open,High,Low,Close,Volume\n2026-10-27,1,2,1,2,10\n2026-10-28,2,3,1,3,20\n"
-    monkeypatch.setattr(y, "fetch_naver_us", lambda s: (_ for _ in ()).throw(RuntimeError("네이버 x")))
+    monkeypatch.setattr(y, "fetch_naver_us", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("네이버 x")))
     monkeypatch.setattr(y, "fetch_yahoo", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("야후 실패(HTTP 429)")))
-    monkeypatch.setattr(y, "fetch_stooq", lambda s: y.parse_stooq(csv))
+    monkeypatch.setattr(y, "fetch_stooq", lambda *a, **k: y.parse_stooq(csv))
     logs = []
     assert y.fetch("NVDA", log=logs.append)["close"].iloc[-1] == 3 and "Stooq" in logs[0]
     with pytest.raises(ValueError):
@@ -226,3 +226,36 @@ def test_report_marks_missing_and_proxy(capsys, monkeypatch):
     m.main(["--demo", "--us"])
     out = capsys.readouterr().out
     assert "[수집] 21/23종목 — 누락: LMT, RTX" in out and "⚠️종목 3/5" in out and "S&P500 대용" in out
+
+
+def test_backtest_forward_returns_and_no_lookahead():
+    import numpy as np
+    import pandas as pd
+    from stock.backtest import collect, format_report, verdict
+    days = pd.bdate_range("2024-01-01", periods=200)
+    c = 100 * 1.01 ** np.arange(200)
+    df = pd.DataFrame({"open": c, "high": c * 1.001, "low": c * 0.999, "close": c, "volume": 1000.0}, index=days)
+    tm = {"T": {"AAA": "에이"}}
+    full = collect({"AAA": df}, tm)
+    assert abs(full["r5"].iloc[0] - (1.01 ** 5 - 1)) < 1e-9 and abs(full["r10"].iloc[0] - (1.01 ** 10 - 1)) < 1e-9
+    assert full["date"].max() == days[-11]  # 마지막 10일은 이후 수익률을 알 수 없어 제외
+
+    # 미래 데이터를 바꿔도 과거 시점의 신호는 변하지 않아야 한다(룩어헤드 없음)
+    df2 = df.copy()
+    df2.iloc[120:, df2.columns.get_loc("close")] *= 0.5
+    for col in ("open", "high", "low"):
+        df2.iloc[120:, df2.columns.get_loc(col)] *= 0.5
+    a, b = collect({"AAA": df}, tm), collect({"AAA": df2}, tm)
+    cut = days[100]
+    pd.testing.assert_frame_equal(a[a["date"] <= cut][["date", "stage", "bias", "score"]].reset_index(drop=True),
+                                  b[b["date"] <= cut][["date", "stage", "bias", "score"]].reset_index(drop=True))
+    assert "[성과 확인]" in format_report(full) and "표본 부족" in verdict(full, full["stage"] == "과열")
+    assert "평가할 데이터가 부족" in format_report(collect({"AAA": df.iloc[:50]}, tm))
+
+
+def test_backtest_cli_demo(capsys):
+    from stock.__main__ import main
+    main(["--demo", "--backtest"])
+    assert "[성과 확인]" in capsys.readouterr().out
+    main(["--demo", "--us", "--backtest"])
+    assert "[성과 확인]" in capsys.readouterr().out
