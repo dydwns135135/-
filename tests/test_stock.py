@@ -893,3 +893,40 @@ def test_dart_fetch_summaries_reports_reason_and_caches(monkeypatch):
     assert d.fetch_summaries(["005930"], key="k") == {} and "010" in d.LAST_ERROR
     monkeypatch.delenv("DART_API_KEY", raising=False)
     assert d.fetch_summaries(["005930"]) == {} and "없음" in d.LAST_ERROR
+
+
+FORM4 = """<ownershipDocument><nonDerivativeTable>
+<nonDerivativeTransaction><transactionCoding><transactionCode>P</transactionCode></transactionCoding>
+<transactionAmounts><transactionShares><value>1000</value></transactionShares><transactionPricePerShare><value>50.0</value></transactionPricePerShare></transactionAmounts></nonDerivativeTransaction>
+<nonDerivativeTransaction><transactionCoding><transactionCode>S</transactionCode></transactionCoding>
+<transactionAmounts><transactionShares><value>200</value></transactionShares><transactionPricePerShare><value>60.0</value></transactionPricePerShare></transactionAmounts></nonDerivativeTransaction>
+<nonDerivativeTransaction><transactionCoding><transactionCode>M</transactionCode></transactionCoding>
+<transactionAmounts><transactionShares><value>999</value></transactionShares><transactionPricePerShare><value>1.0</value></transactionPricePerShare></transactionAmounts></nonDerivativeTransaction>
+</nonDerivativeTable></ownershipDocument>"""
+
+
+def test_edgar_parse_summarize_and_fetch(monkeypatch, capsys):
+    import stock.edgar as e
+    from stock.__main__ import us_disclosure_lines
+    assert e.parse_form4(FORM4) == [("P", 1000.0, 50.0), ("S", 200.0, 60.0)]      # 옵션 행사(M)는 제외
+    fl = [{"form": "8-K", "date": "2026-10-01", "items": "2.02,9.01", "acc": "0001-26-000001", "doc": "a.htm"},
+          {"form": "8-K", "date": "2026-10-02", "items": "4.02", "acc": "0001-26-000002", "doc": "b.htm"},
+          {"form": "4", "date": "2026-10-03", "items": "", "acc": "0001-26-000003", "doc": "xslF345X05/f4.xml"}]
+    s = e.summarize_8k(fl)
+    assert s["count"] == 2 and s["negative"] == ["재무제표 신뢰 불가(정정 필요)(2026-10-02)"] and s["notable"] == ["실적 발표"]
+    assert e.summarize_8k([{"form": "6-K", "date": "2026-10-01", "items": "", "acc": "x", "doc": "y"}])["foreign"] is True
+    urls = []
+
+    class R:
+        text = FORM4
+    monkeypatch.setattr(e, "_get", lambda url, ua=None: urls.append(url) or R())
+    ins = e.insider_trades(123, fl)
+    assert ins["buys"] == 1 and ins["sells"] == 1 and ins["buy_value"] == 50000.0 and ins["sell_value"] == 12000.0
+    assert urls == ["https://www.sec.gov/Archives/edgar/data/123/000126000003/f4.xml"]      # xsl 폴더 없는 원본 주소
+    monkeypatch.setattr(e, "ticker_ciks", lambda: {"LLY": 123})
+    monkeypatch.setattr(e, "recent_filings", lambda cik, days=90: fl)
+    out = e.fetch_summaries(["LLY", "ZZZZ"])
+    assert out["LLY"]["insider"]["buys"] == 1 and "ZZZZ" not in out and "ZZZZ" in e.LAST_ERROR
+    lines = us_disclosure_lines(out["LLY"])
+    assert "8-K 2건" in lines[0] and "주의 항목" in lines[0] and "매수 1건" in lines[1]
+    assert "미확인" in us_disclosure_lines(None, "접속 실패")[0]
