@@ -746,3 +746,19 @@ def test_macd_robust_cli_demo(capsys):
     assert "[MACD 재확인]" in out and "① 신호일 종가에 진입" in out and "② 다음 날 시가에 진입" in out and "(한국)" in out
     main(["--demo", "--us", "--macd-robust"])
     assert "(미국)" in capsys.readouterr().out
+
+
+def test_open_entry_ignores_zero_open_prices_instead_of_inf():
+    import numpy as np
+    import pandas as pd
+    from stock.macdtest import collect_events
+    days = pd.bdate_range("2025-01-01", periods=40)
+    close = [100.0 + i for i in range(40)]
+    a = pd.DataFrame({"open": close, "high": close, "low": close, "close": close, "volume": 1.0}, index=days)
+    b = a.copy()
+    b.loc[days[13], "open"] = 0.0                                   # 시가가 0 으로 온 날(데이터 누락)
+    flag = pd.Series([i in (12, 25) for i in range(40)], index=days)
+    ev, base = collect_events({"A": a, "B": b}, lambda df: {"BUY t": flag}, warmup=0, entry="open")
+    assert np.isfinite(ev[["r5", "r10", "ex5", "ex10"]].to_numpy()).all() and all(np.isfinite(v) for v in base.values())
+    # 0 시가로 진입하는 신호(B 종목의 12일째 신호)는 진입가가 없어 제외되고, 정상 신호는 남는다
+    assert not ((ev["code"] == "B") & (ev["date"] == days[12])).any() and ((ev["code"] == "A") & (ev["date"] == days[12])).any()

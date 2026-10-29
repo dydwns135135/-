@@ -50,11 +50,15 @@ def collect_events(market, flags_fn=ts_pro_flags, horizons=HORIZONS, warmup=WARM
     기준선(그날 전체 종목 평균)도 같은 방식으로 계산한다.
     """
     closes = pd.DataFrame({c: d["close"] for c, d in market.items()}).sort_index()
+    closes = closes.where(closes > 0)
     if entry == "open":
+        # 네이버 일봉에는 시가가 0 으로 오는 날이 있다(거래정지·데이터 누락). 그런 날은 진입가가 없는 것으로 보고 제외한다.
         opens = pd.DataFrame({c: d["open"] for c, d in market.items()}).sort_index().reindex(closes.index)
+        opens = opens.where(opens > 0)
         fwd = {h: closes.shift(-h) / opens.shift(-1) - 1 for h in horizons}
     else:
         fwd = {h: closes.shift(-h) / closes - 1 for h in horizons}
+    fwd = {h: f.replace([np.inf, -np.inf], np.nan) for h, f in fwd.items()}
     base = {h: fwd[h].mean(axis=1) for h in horizons}   # 그날 전체 종목 평균 수익률
     rows = []
     for code, df in market.items():
