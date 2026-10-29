@@ -42,10 +42,19 @@ def ts_pro_flags(df, pcts=(0.5, 1.0, 2.0)):
     return out
 
 
-def collect_events(market, flags_fn=ts_pro_flags, horizons=HORIZONS, warmup=WARMUP, gap=GAP):
-    """신호 하나당 한 줄: (종목, 변형, 날짜, h일 수익률, h일 초과수익). 같은 종목·변형에서 gap 거래일 안의 재신호는 제외."""
+def collect_events(market, flags_fn=ts_pro_flags, horizons=HORIZONS, warmup=WARMUP, gap=GAP, entry="close"):
+    """신호 하나당 한 줄: (종목, 변형, 날짜, h일 수익률, h일 초과수익). 같은 종목·변형에서 gap 거래일 안의 재신호는 제외.
+
+    entry="close": 신호가 뜬 날 종가에 진입(신호일 종가 → h거래일 뒤 종가).
+    entry="open": 봉이 마감된 뒤 알림을 받고 실제로 사는 경우 — 다음 날 시가에 진입(다음 날 시가 → 신호일 기준 h거래일 뒤 종가).
+    기준선(그날 전체 종목 평균)도 같은 방식으로 계산한다.
+    """
     closes = pd.DataFrame({c: d["close"] for c, d in market.items()}).sort_index()
-    fwd = {h: closes.shift(-h) / closes - 1 for h in horizons}
+    if entry == "open":
+        opens = pd.DataFrame({c: d["open"] for c, d in market.items()}).sort_index().reindex(closes.index)
+        fwd = {h: closes.shift(-h) / opens.shift(-1) - 1 for h in horizons}
+    else:
+        fwd = {h: closes.shift(-h) / closes - 1 for h in horizons}
     base = {h: fwd[h].mean(axis=1) for h in horizons}   # 그날 전체 종목 평균 수익률
     rows = []
     for code, df in market.items():
@@ -138,4 +147,63 @@ def run_macd_test(market, label="", cost=0.003):
                      f"같은 기간 전체 평균 대비 {rt['ex'].mean():+.2%}p (t={0 if t is None else t:+.1f})")
     lines += ["", "판정(10일 기준): " + verdict(ev, "BUY TS Pro(0선+1.0%)"),
               "※ 지금 유명한 종목만 본 결과라 실제보다 좋게 나올 수 있고, 여러 변형을 함께 보면 우연히 하나쯤 좋게 나올 수 있습니다. 과거 성과가 미래를 보장하지 않습니다."]
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------------------------
+# 재확인: (1) 앞 구간으로 고르고 마지막 1년으로 확인  (2) 다음 날 시가 진입
+def _seg(x):
+    if len(x) == 0:
+        return "신호 없음"
+    out = [f"n={len(x):>4}"]
+    for h in HORIZONS:
+        t = _t(x[f"ex{h}"])
+        out.append(f"{h}일 {x[f'ex{h}'].mean():+.2%}p(t=" + ("–" if t is None else f"{t:+.1f}") + ")")
+    return " ".join(out)
+
+
+def persist_verdict(is_x, oos_x, h=5, min_n=30):
+    """학습 구간에서 고른 변형이 확인 구간에서도 유지되는지."""
+    if len(oos_x) < min_n:
+        return f"확인 구간 표본 부족(n={len(oos_x)} < {min_n}) — 판단 보류"
+    m, t = oos_x[f"ex{h}"].mean(), _t(oos_x[f"ex{h}"])
+    ts = "–" if t is None else f"{t:+.1f}"
+    if m > 0 and t is not None and t >= 2:
+        return f"확인 구간에서도 유지됨 ({h}일 {m:+.2%}p, t={ts})"
+    if m > 0:
+        return f"방향은 같지만 통계적으로 약함 ({h}일 {m:+.2%}p, t={ts}) — 입증되지 않음"
+    return f"확인 구간에서 사라지거나 반대 ({h}일 {m:+.2%}p, t={ts})"
+
+
+def run_macd_robust(market, label="", flags_fn=ts_pro_flags, oos_days=365, min_n=30):
+    if not market:
+        return "[MACD 재확인] 데이터가 없습니다."
+    d0 = min(d.index.min() for d in market.values())
+    d1 = max(d.index.max() for d in market.values())
+    cutoff = d1 - pd.Timedelta(days=oos_days)
+    lines = [f"[MACD 재확인] TS Pro(12·26·9, 일봉) {label} · 종목 {len(market)}개",
+             f"학습 구간 {d0:%Y-%m-%d} ~ {cutoff:%Y-%m-%d} / 확인 구간(마지막 {oos_days // 365}년) {cutoff:%Y-%m-%d} ~ {d1:%Y-%m-%d}",
+             "초과수익 = 신호 뒤 수익률 − 그날 전체 종목 평균 (같은 종목 10일 안 재신호 제외). 학습 구간에서 5일 t값이 가장 높은 BUY 변형을 고르고, 확인 구간에서 유지되는지 봅니다."]
+    for entry, title in (("close", "① 신호일 종가에 진입"), ("open", "② 다음 날 시가에 진입 (알림을 받고 실제로 사는 경우)")):
+        ev, base = collect_events(market, flags_fn, entry=entry)
+        lines.append(f"\n{title} — 기준선 5일 {base[5]:+.2%} / 10일 {base[10]:+.2%}")
+        if len(ev) == 0:
+            lines.append("  신호 없음")
+            continue
+        buys = [n for n in ev["variant"].unique() if n.startswith("BUY")]
+        is_ev, oos_ev = ev[ev["date"] <= cutoff], ev[ev["date"] > cutoff]
+        cand = []
+        for name in buys:
+            a, b = is_ev[is_ev["variant"] == name], oos_ev[oos_ev["variant"] == name]
+            lines.append(f"  {name[4:]:<18} 학습 {_seg(a)} │ 확인 {_seg(b)}")
+            t = _t(a["ex5"]) if len(a) >= min_n else None
+            if t is not None:
+                cand.append((t, name))
+        if cand:
+            t, name = max(cand)
+            b = oos_ev[oos_ev["variant"] == name]
+            lines.append(f"  → 학습에서 고른 변형: {name[4:]} (학습 5일 t={t:+.1f}) → {persist_verdict(is_ev[is_ev['variant'] == name], b, 5, min_n)}")
+        else:
+            lines.append("  → 학습 구간 표본이 부족해 변형을 고르지 못함")
+    lines.append("\n※ 지금 유명한 종목만 본 결과(생존 편향), 변형을 여러 개 비교하므로 우연히 하나쯤 좋게 나올 수 있습니다. 세금·슬리피지는 단순화했고 과거 성과가 미래를 보장하지 않습니다.")
     return "\n".join(lines)
