@@ -681,3 +681,68 @@ def test_macd_cli_demo(capsys):
     assert "[MACD 신호 시험]" in out and "왕복 매매" in out and "TS Pro(0선+1.0%)" in out and "(한국)" in out
     main(["--demo", "--us", "--macd"])
     assert "(미국)" in capsys.readouterr().out
+
+
+def test_open_entry_uses_next_day_open_and_same_basis_baseline():
+    import pandas as pd
+    from stock.macdtest import collect_events
+    days = pd.bdate_range("2025-01-01", periods=30)
+    close = [100.0 + i for i in range(30)]
+    opn = [c + 7 for c in close]                         # 시가가 종가와 다르게 (갭)
+    a = pd.DataFrame({"open": opn, "high": close, "low": close, "close": close, "volume": 1.0}, index=days)
+    b = pd.DataFrame({"open": [50.0] * 30, "high": 50.0, "low": 50.0, "close": [50.0] * 30, "volume": 1.0}, index=days)
+    flag = pd.Series([i == 12 for i in range(30)], index=days)
+    fn = lambda df: {"BUY t": flag}
+    ev_c, base_c = collect_events({"A": a, "B": b}, fn, warmup=0)
+    ev_o, base_o = collect_events({"A": a, "B": b}, fn, warmup=0, entry="open")
+    ra = ev_c[(ev_c.code == "A")].iloc[0]; ro = ev_o[(ev_o.code == "A")].iloc[0]
+    assert abs(ra["r5"] - (close[17] / close[12] - 1)) < 1e-12                       # 신호일 종가 → 5일 뒤 종가
+    assert abs(ro["r5"] - (close[17] / opn[13] - 1)) < 1e-12                         # 다음 날 시가 → 신호일 기준 5일 뒤 종가
+    assert abs(ro["r10"] - (close[22] / opn[13] - 1)) < 1e-12
+    day = days[12]
+    want = ((close[17] / opn[13] - 1) + (50 / 50 - 1)) / 2                           # 기준선도 같은 방식(전체 종목 평균)
+    assert abs((ro["r5"] - ro["ex5"]) - want) < 1e-12 and ro["date"] == day
+
+
+def test_persist_verdict_and_robust_report_separates_surviving_from_vanishing_edge(capsys):
+    import numpy as np
+    import pandas as pd
+    from stock.macdtest import persist_verdict, run_macd_robust
+    ex = lambda m, sd=0.01, n=60, seed=0: pd.DataFrame({"ex5": np.random.default_rng(seed).normal(m, sd, n)})
+    assert "유지됨" in persist_verdict(ex(0.03), ex(0.03, seed=1))
+    assert "약함" in persist_verdict(ex(0.03), ex(0.001, 0.02, seed=2))
+    assert "사라지거나" in persist_verdict(ex(0.03), ex(-0.02, seed=3))
+    assert "표본 부족" in persist_verdict(ex(0.03), ex(0.03, n=5))
+
+    n, days = 760, pd.bdate_range("2023-06-01", periods=760)   # 학습 약 1.8년 + 확인 1년
+
+    def build(plant_until):
+        rng = np.random.default_rng(11)
+        market, flags = {}, {}
+        for k in range(14):
+            ret = rng.normal(0, 0.01, n)
+            pick = np.sort(rng.choice(np.arange(80, n - 15), 24, replace=False))
+            pick = np.array([p for i, p in enumerate(pick) if i == 0 or p - pick[i - 1] > 12])
+            ret[pick[pick < plant_until] + 1] += 0.04                  # 심은 효과는 plant_until 이전 신호에만
+            c = 100 * np.cumprod(1 + ret)
+            df = pd.DataFrame({"open": np.r_[c[0], c[:-1]], "high": c, "low": c, "close": c, "volume": 1.0}, index=days)  # 시가 = 전날 종가(갭 없음)
+            df.attrs["code"] = f"S{k}"
+            market[f"S{k}"] = df
+            f = np.zeros(n, dtype=bool); f[pick] = True; flags[f"S{k}"] = f
+        return market, (lambda df: {"BUY 심음": pd.Series(flags[df.attrs["code"]], index=df.index)})
+    m_all, fn_all = build(plant_until=n)        # 효과가 기간 내내 있는 세상
+    m_is, fn_is = build(plant_until=480)        # 학습 구간에만 있고 확인 구간에서는 사라지는 세상
+    out_all = run_macd_robust(m_all, "(시험)", fn_all)
+    out_is = run_macd_robust(m_is, "(시험)", fn_is)
+    assert out_all.count("확인 구간에서도 유지됨") == 2                                # ①②모두
+    assert "확인 구간에서도 유지됨" not in out_is and ("사라지거나" in out_is or "약함" in out_is)
+    assert "학습 구간" in out_all and "확인 구간(마지막 1년)" in out_all
+
+
+def test_macd_robust_cli_demo(capsys):
+    from stock.__main__ import main
+    main(["--demo", "--macd-robust"])
+    out = capsys.readouterr().out
+    assert "[MACD 재확인]" in out and "① 신호일 종가에 진입" in out and "② 다음 날 시가에 진입" in out and "(한국)" in out
+    main(["--demo", "--us", "--macd-robust"])
+    assert "(미국)" in capsys.readouterr().out

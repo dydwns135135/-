@@ -5,6 +5,11 @@ name: "stock-macd-test (TS Pro MACD 신호 시험 → 텔레그램)"
 on:
   workflow_dispatch:
     inputs:
+      kind:
+        description: "robust=학습/확인 구간 분리 + 다음 날 시가 진입, basic=기본 시험, both=둘 다"
+        type: choice
+        options: [robust, basic, both]
+        default: robust
       demo:
         description: "합성 데이터로 시험(실데이터 대신)"
         type: boolean
@@ -28,7 +33,14 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DEMO: ${{ inputs.demo }}
+          KIND: ${{ inputs.kind }}
         run: |
           KR="--naver"; US="--yahoo"; if [ "$DEMO" = "true" ]; then KR="--demo"; US="--demo --us"; fi
-          python -m stock $KR --macd --telegram
-          python -m stock $US --macd --telegram
+          if [ "$KIND" = "basic" ] || [ "$KIND" = "both" ]; then
+            python -m stock $KR --macd --telegram
+            python -m stock $US --macd --telegram
+          fi
+          if [ "$KIND" = "robust" ] || [ "$KIND" = "both" ] || [ -z "$KIND" ]; then
+            python -m stock $KR --macd-robust --telegram
+            python -m stock $US --macd-robust --telegram
+          fi
