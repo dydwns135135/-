@@ -154,11 +154,11 @@ def scan_codes(path):
     return sorted(load_scan_snapshots(path)["code"].unique()) if os.path.isdir(os.path.join(path, "scan")) else []
 
 
-def group_excess(df, mask, h):
+def group_excess(df, mask, h, step=1):
     """mask 에 든 종목의 이후 h일 수익률이 그날 훑은 전체 평균보다 얼마나 높았는지(날짜별 평균 → h일 간격 표본 → t값)."""
     base = df.groupby("date")[f"r{h}"].mean()
     g = df[mask].groupby("date")[f"r{h}"].mean()
-    ex = (g - base.reindex(g.index)).sort_index().iloc[::h]
+    ex = (g - base.reindex(g.index)).sort_index().iloc[::max(1, h // step)]
     if len(ex) < 10 or ex.std() == 0:
         return None
     return ex.mean(), (ex > 0).mean(), ex.mean() / (ex.std() / np.sqrt(len(ex))), len(ex)

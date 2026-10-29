@@ -834,3 +834,39 @@ def test_run_score_robust_small_market_runs():
     mk = {c: d for c, d in full.items() if c != "KOSPI"}
     out = bt.run_score_robust(mk, "(소형)")
     assert "[점수 재확인]" in out and "학습 구간" in out and "② 다음 날 시가" in out
+
+
+def test_report_wording_shows_watch_candidate_not_preempt(capsys):
+    from stock.__main__ import DISCLAIMER, main
+    main(["--demo"])
+    out = capsys.readouterr().out
+    assert "[선점 후보]" not in out and "근거는 확인되지 않았습니다" in DISCLAIMER
+
+
+def test_score_walk_report_and_cli_wiring(monkeypatch, capsys):
+    import numpy as np
+    import pandas as pd
+    import stock.__main__ as m
+    import stock.backtest as bt
+    days = pd.bdate_range("2018-01-01", periods=1700)
+    rng = np.random.default_rng(5)
+    rows = []
+    for i, d in enumerate(days):
+        if i % 5:
+            continue
+        for k in range(14):
+            score = float(rng.normal(50, 15))
+            rec = {"code": f"S{k}", "name": f"S{k}", "theme": "T", "date": d, "score": score, "bias_pts": int(rng.integers(-3, 4)),
+                   "stage": "선점 후보" if score > 65 else "관망", "c_trend": float(rng.uniform(0, 25)), "c_near": float(rng.uniform(0, 25)),
+                   "c_volume": float(rng.uniform(0, 20)), "c_squeeze": float(rng.uniform(0, 10))}
+            for h in bt.HORIZONS:
+                rec[f"r{h}"] = rng.normal(0, 0.01)
+                rec[f"ro{h}"] = rng.normal(0, 0.01)
+            rows.append(rec)
+    out = bt.walk_forward_report(pd.DataFrame(rows), "(시험)", 5)
+    assert "[점수 워크포워드]" in out and "관찰 후보" in out and "연도별 요약" in out
+    assert "[점수 워크포워드]" in bt.walk_forward_report(pd.DataFrame(), "", 5)
+    seen = {}
+    monkeypatch.setattr(bt, "run_score_walk", lambda market, label="": seen.update(codes=sorted(market), label=label) or "[점수 워크포워드] 스텁")
+    m.main(["--demo", "--score-walk"])
+    assert "스텁" in capsys.readouterr().out and "KOSPI" not in seen["codes"] and seen["label"] == "(한국)"

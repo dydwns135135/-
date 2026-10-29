@@ -5,6 +5,11 @@ name: "stock-score-test (분석기 점수 재확인: 학습/확인 구간 + 다�
 on:
   workflow_dispatch:
     inputs:
+      kind:
+        description: "walk=해마다 확인(5~10년치, 오래 걸림) / robust=최근 1년 확인 / both"
+        type: choice
+        options: [walk, robust, both]
+        default: walk
       demo:
         description: "합성 데이터로 시험(실데이터 대신)"
         type: boolean
@@ -13,7 +18,7 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -28,7 +33,14 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DEMO: ${{ inputs.demo }}
+          KIND: ${{ inputs.kind }}
         run: |
           KR="--naver"; US="--yahoo"; if [ "$DEMO" = "true" ]; then KR="--demo"; US="--demo --us"; fi
-          python -m stock $KR --score-robust --telegram
-          python -m stock $US --score-robust --telegram
+          if [ "$KIND" != "robust" ]; then
+            python -m stock $KR --score-walk --telegram
+            python -m stock $US --score-walk --telegram
+          fi
+          if [ "$KIND" != "walk" ]; then
+            python -m stock $KR --score-robust --telegram
+            python -m stock $US --score-robust --telegram
+          fi

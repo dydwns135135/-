@@ -16,8 +16,15 @@ from stock.yahoo import load_yahoo
 from trader import notify
 
 DISCLAIMER = ("※ 점수·흐름·관찰 우선순위는 현재 지표를 요약한 것일 뿐 내일의 예측이 아닙니다. 과거 3년 시험에서 이 점수가 기준선보다 "
-              "나은 성과를 냈다는 근거는 확인되지 않았습니다(매주 토요일 '성과 확인' 참고). 참고용이며 투자 권유가 아닙니다. "
+              "나은 성과를 냈다는 근거는 확인되지 않았습니다(매주 토요일 '성과 확인' 참고). 특히 앞 구간에서 고른 기준을 마지막 1년에서 확인한 시험(2026-10)에서 "
+              "점수·구성 항목·'관찰 후보'는 어느 것도 유지되지 않았고, '관찰 후보'는 한국·미국 모두 최근 1년 평균보다 낮았습니다. 참고용이며 투자 권유가 아닙니다. "
               "매수 전 손절 기준을 먼저 정하세요.")
+
+STAGE_SHOW = {"선점 후보": "관찰 후보"}  # 내부 값(저장 데이터·시험)은 그대로 두고 화면에서만 바꾼다
+
+
+def disp(stage):
+    return STAGE_SHOW.get(stage, stage)
 
 
 def main(argv=None):
@@ -33,6 +40,7 @@ def main(argv=None):
     ap.add_argument("--scan", action="store_true", help="한국 시장 훑기: 네이버 테마에서 움직이는 테마·종목을 자동 수집(--naver 불필요)")
     ap.add_argument("--macd", action="store_true", help="TradingView TS Pro(MACD 교차) 신호 시험(3년치 데이터, --naver/--yahoo/--demo 와 함께)")
     ap.add_argument("--macd-robust", dest="macd_robust", action="store_true", help="MACD 재확인: 학습/확인 구간 분리 + 다음 날 시가 진입")
+    ap.add_argument("--score-walk", dest="score_walk", action="store_true", help="점수 워크포워드: 해마다 앞 구간에서 고른 기준이 그해에도 통했는지(5~10년치 데이터)")
     ap.add_argument("--score-robust", dest="score_robust", action="store_true", help="점수 재확인: 학습/확인 구간 분리 + 다음 날 시가 진입(3년치 데이터)")
     ap.add_argument("--us", action="store_true", help="미국 테마로 분석(--demo 와 함께 시험용)")
     ap.add_argument("--top", type=int, default=5, help="종목 표시 개수")
@@ -58,13 +66,13 @@ def main(argv=None):
     print(buf.getvalue())
     if a.telegram:
         head = "🇺🇸 미국" if (a.yahoo or a.us) else "🇰🇷 한국"
-        notify.send(("📊 점수 재확인(학습/확인 구간, 다음 날 시가)\n" if a.score_robust else "📉 MACD 재확인(학습/확인 구간, 다음 날 시가)\n" if a.macd_robust else "📉 MACD 신호 시험\n" if a.macd else "🔎 한국 시장 훑기\n" if a.scan else f"📊 {head} 성과 확인\n" if a.backtest else f"📊 {head} 쌓은 데이터 시험(수급·훑기)\n" if a.evaluate else ("🇺🇸 오늘의 미국 종목 분석\n" if (a.yahoo or a.us) else "📈 오늘의 종목 분석\n")) + buf.getvalue())
+        notify.send(("📊 점수 워크포워드(연도별 확인)\n" if a.score_walk else "📊 점수 재확인(학습/확인 구간, 다음 날 시가)\n" if a.score_robust else "📉 MACD 재확인(학습/확인 구간, 다음 날 시가)\n" if a.macd_robust else "📉 MACD 신호 시험\n" if a.macd else "🔎 한국 시장 훑기\n" if a.scan else f"📊 {head} 성과 확인\n" if a.backtest else f"📊 {head} 쌓은 데이터 시험(수급·훑기)\n" if a.evaluate else ("🇺🇸 오늘의 미국 종목 분석\n" if (a.yahoo or a.us) else "📈 오늘의 종목 분석\n")) + buf.getvalue())
 
 
 def run(a):
     us = a.yahoo or a.us
     themes_map, watchlist, idx_key, idx_name = (US_THEMES, US_WATCHLIST, US_INDEX, "S&P500") if us else (THEMES, WATCHLIST, "KOSPI", "KOSPI")
-    long = a.backtest or a.evaluate or a.macd or a.macd_robust or a.score_robust  # 3년치 데이터가 필요한 모드
+    long = a.backtest or a.evaluate or a.macd or a.macd_robust or a.score_robust or a.score_walk  # 3년 이상 데이터가 필요한 모드
     scan_stats = None
     if a.scan:
         from stock.scan import build_scan
@@ -73,7 +81,7 @@ def run(a):
         market = load_naver(codes, log=lambda m: None)  # 개별 실패는 개수만 집계(텔레그램 길이 제한)
         scan_stats["failed"] = len(codes) - (len(market) - 1)
     elif a.yahoo:
-        market = load_yahoo([c for m in US_THEMES.values() for c in m], long=long)
+        market = load_yahoo([c for m in US_THEMES.values() for c in m], long=long, years=10 if a.score_walk else 3)
     elif a.demo:
         n = 800 if long else 260
         market = synthetic_market(n=n, themes=US_THEMES, index=US_INDEX, flow=False) if us else synthetic_market(n=n)
@@ -82,10 +90,10 @@ def run(a):
         if a.evaluate:  # 쌓아 둔 훑기 스냅샷에 나온 종목 가격도 필요하다
             from stock.snapshot import scan_codes
             codes = sorted(set(codes) | set(scan_codes(a.evaluate)))
-        if a.macd or a.macd_robust or a.score_robust:  # 3년치 시험은 시가총액 상위 종목까지 넓혀 표본을 늘린다(실패하면 기존 목록만)
+        if a.macd or a.macd_robust or a.score_robust or a.score_walk:  # 3년치 시험은 시가총액 상위 종목까지 넓혀 표본을 늘린다(실패하면 기존 목록만)
             from stock.scan import cap_universe
             codes = sorted(set(codes) | set(cap_universe()))
-        market = load_naver(codes, days=800 if long else 250, with_flow=not long, log=(lambda m: None) if (a.macd or a.macd_robust or a.score_robust) else print)
+        market = load_naver(codes, days=2800 if a.score_walk else 800 if long else 250, with_flow=not long, log=(lambda m: None) if (a.macd or a.macd_robust or a.score_robust or a.score_walk) else print)
     elif a.pykrx:
         market = load_pykrx([c for m in THEMES.values() for c in m])
     else:
@@ -97,6 +105,10 @@ def run(a):
         scan_snap = load_scan_snapshots(a.evaluate)
         if not scan_snap.empty:
             print("\n" + evaluate_scan(scan_snap, market))
+        return
+    if a.score_walk:
+        from stock.backtest import run_score_walk
+        print(run_score_walk({c: d for c, d in market.items() if c != idx_key}, label="(미국)" if us else "(한국)"))
         return
     if a.score_robust:
         from stock.backtest import run_score_robust
@@ -149,9 +161,9 @@ def run(a):
     print("\n[테마 순위]" + (" (상위 10개)" if scan_stats else ""))
     for i, r in (themes.head(10) if scan_stats else themes).iterrows():
         print(f"{i+1}. {r['theme']:<10} 점수 {r['score']:5.1f} | 강세종목비율 {r['breadth']:.0%} | "
-              f"거래대금 {r['value_growth']:+.0%} | 대장 {r['leader']} ({r['leader_stage']})"
+              f"거래대금 {r['value_growth']:+.0%} | 대장 {r['leader']} ({disp(r['leader_stage'])})"
               + (f" | ⚠️종목 {r['n']}/{r['total']}" if r["n"] < r["total"] else ""))
-    print("\n[선점 후보] 점수 높고 아직 안 오른 종목")
+    print("\n[관찰 후보] 점수는 높지만 아직 덜 오른 종목 — 시험에서 이후 수익률이 평균보다 높다는 근거 없음(최근 1년은 평균 이하)")
     picks = stocks[stocks["stage"] == "선점 후보"].head(a.top)
     disc = fetch_summaries(list(picks["code"])) if a.dart and not us else {}
     if a.dart and not us and not disc:
@@ -176,7 +188,7 @@ def run(a):
         for _, r in watch.iterrows():
             fl = "수급 n/a" if pd.isna(r["flow_ratio"]) else f"수급 {r['flow_ratio']:+.1%}"
             ma = "20일선 위" if r["above_ma20"] else "20일선 아래"
-            print(f"  {r['name']}({r['theme']}) {r['stage']} · 점수 {r['score']} | 5일 {r['ret5']:+.1%} · 20일 {r['ret20']:+.1%} | "
+            print(f"  {r['name']}({r['theme']}) {disp(r['stage'])} · 점수 {r['score']} | 5일 {r['ret5']:+.1%} · 20일 {r['ret20']:+.1%} | "
                   f"{ma} | 거래량 x{r['vol_ratio']:.1f} | 60일고점 {r['prox60']:.0%} | {fl}")
             act, why = decide(r, reg, wdisc.get(r["code"]), kr=not us)
             print(f"    → 관찰 우선순위: {act}  ({'; '.join(why)})")
