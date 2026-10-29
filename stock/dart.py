@@ -79,3 +79,40 @@ def fetch_summaries(codes, key=None, days=90):
         except Exception as e:
             LAST_ERROR = f"{type(e).__name__} {str(e)[:80]}"
     return out
+
+
+def recent_items(key, corp_code, days=90):
+    """최근 days일 공시 [(접수일, 제목)] 최신순."""
+    end = date.today()
+    p = {"crtfc_key": key, "corp_code": corp_code, "page_count": 100,
+         "bgn_de": (end - timedelta(days=days)).strftime("%Y%m%d"), "end_de": end.strftime("%Y%m%d")}
+    j = requests.get(f"{BASE}/list.json", params=p, timeout=30).json()
+    if j.get("status") not in ("000", "013"):
+        raise RuntimeError(f"DART 응답 {j.get('status')}: {j.get('message')}")
+    return [(x["rcept_dt"], re.sub(r"\s+", " ", x["report_nm"]).strip()) for x in j.get("list", [])]
+
+
+def check_report(codes, days=90, key=None):
+    """종목코드 목록 → 공시 제목을 날짜와 함께 보여 주는 텍스트(호재·악재 키워드 표시)."""
+    key = key or os.environ.get("DART_API_KEY")
+    if not key:
+        return "DART_API_KEY 없음"
+    cc = corp_codes(key)
+    lines = []
+    for code in codes:
+        if code not in cc:
+            lines.append(f"[{code}] DART 회사 코드 없음")
+            continue
+        items = recent_items(key, cc[code], days)
+        lines.append(f"[{code}] 최근 {days}일 공시 {len(items)}건")
+        for d, t in items[:25]:
+            mark = {1: "＋호재성", -1: "－악재성", 0: ""}[classify_title(t)]
+            lines.append(f"  {d[:4]}-{d[4:6]}-{d[6:]} {t} {mark}".rstrip())
+        if len(items) > 25:
+            lines.append(f"  … 외 {len(items) - 25}건")
+    return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    import sys
+    print(check_report(sys.argv[1:]))

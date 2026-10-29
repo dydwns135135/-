@@ -960,3 +960,12 @@ def test_edgar_blocked_reports_reason_and_uses_fallback(monkeypatch):
     monkeypatch.setattr(e.requests, "get", sub)
     out = e.fetch_summaries(["AAPL", "NVDA"], insiders=False)
     assert out["AAPL"]["count"] == 1 and "NVDA" not in out and "다름" in e.LAST_ERROR   # 응답 티커와 다르면 버린다
+
+
+def test_dart_check_report_lists_dated_titles(monkeypatch):
+    import stock.dart as d
+    monkeypatch.setattr(d, "corp_codes", lambda key: {"036460": "00001"})
+    monkeypatch.setattr(d, "recent_items", lambda key, cc, days=90: [("20261028", "단일판매ㆍ공급계약체결"), ("20261001", "유상증자결정"), ("20260930", "분기보고서")])
+    out = d.check_report(["036460", "999999"], key="k")
+    assert "[036460] 최근 90일 공시 3건" in out and "2026-10-28 단일판매ㆍ공급계약체결 ＋호재성" in out
+    assert "2026-10-01 유상증자결정 －악재성" in out and "[999999] DART 회사 코드 없음" in out
