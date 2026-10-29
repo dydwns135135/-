@@ -91,6 +91,7 @@ def analyze_stock(df):
         above20=last > ma20.iloc[-1], aligned=ma20.iloc[-1] > ma60.iloc[-1], slope_up=ma20.iloc[-1] > ma20.iloc[-6],
         ret5=ret5, vol_ratio=vol_ratio, both_buy=both_buy, both_sell=both_sell, overheated=overheated)
     return {"bias": bias, "bias_pts": bias_pts, "bias_why": bias_why,
+            "c_trend": trend, "c_near": near, "c_volume": volume, "c_squeeze": squeeze, "c_flow": flow,
             "score": round(score, 1), "stage": stage, "indiv_ratio": indiv_ratio, "both_buy": bool(both_buy), "ret5": ret5, "ret20": ret20, "ext": ext,
             "foreign5": float(df["foreign"].iloc[-5:].sum()) if flow_ratio is not None else None,
             "inst5": float(df["inst"].iloc[-5:].sum()) if flow_ratio is not None else None,

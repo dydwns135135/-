@@ -22,15 +22,18 @@ def collect(market, themes_map, horizons=HORIZONS, min_hist=70):
                 continue
             df = market[code][OHLCV]
             c = df["close"].to_numpy()
+            o = df["open"].to_numpy()
             for t in range(min_hist - 1, len(df) - max(horizons)):
                 r = analyze_stock(df.iloc[max(0, t + 1 - WINDOW):t + 1])
                 if r is None:
                     continue
                 rec = {"code": code, "name": name, "theme": theme, "date": df.index[t],
                        "stage": r["stage"].split("(")[0], "bias": r["bias"].split("(")[0], "score": r["score"],
-                       "bias_pts": r["bias_pts"]}
+                       "bias_pts": r["bias_pts"], "c_trend": r["c_trend"], "c_near": r["c_near"],
+                       "c_volume": r["c_volume"], "c_squeeze": r["c_squeeze"]}
                 for h in horizons:
-                    rec[f"r{h}"] = c[t + h] / c[t] - 1
+                    rec[f"r{h}"] = c[t + h] / c[t] - 1                                  # 신호일 종가 진입
+                    rec[f"ro{h}"] = c[t + h] / o[t + 1] - 1 if o[t + 1] > 0 else np.nan  # 다음 날 시가 진입(시가 0 인 날은 제외)
                 rows.append(rec)
     return pd.DataFrame(rows)
 
@@ -128,3 +131,75 @@ def format_report(df, horizons=HORIZONS):
     lines.append("  과열     : " + verdict(df, df["stage"] == "과열"))
     lines.append("\n※ 지금 유명한 종목만 본 결과라 실제보다 좋게 나올 수 있고, 과거 성과가 미래를 보장하지 않습니다.")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------------------------
+# 점수 재확인: 앞 구간에서 가장 잘 맞는 기준을 고르고, 마지막 1년에서 유지되는지 확인한다(MACD 재확인과 같은 방식).
+SCORE_KEYS = (("score", "점수(가격 기반)"), ("c_trend", "추세 항목"), ("c_near", "고점 근접 항목"),
+              ("c_volume", "거래량 항목"), ("c_squeeze", "변동폭 수축 항목"), ("bias_pts", "흐름 점수"))
+STAGES = ("선점 후보", "상승 진행", "과열", "관망")
+
+
+def _cell_rank(res):
+    out = []
+    for h in HORIZONS:
+        r = res[h]["top"]
+        out.append(f"{h}일 " + ("표본 부족" if r is None else f"{r[0]:+.2%}p(t={r[2]:+.1f})"))
+    return " ".join(out)
+
+
+def _persist(res, h=5):
+    r = res[h]["top"]
+    if r is None:
+        return "확인 구간 표본 부족 — 판단 보류"
+    mean, _, t = r
+    if mean > 0 and t >= 2:
+        return f"확인 구간에서도 유지됨 ({h}일 {mean:+.2%}p, t={t:+.1f})"
+    if mean > 0:
+        return f"방향은 같지만 통계적으로 약함 ({h}일 {mean:+.2%}p, t={t:+.1f}) — 입증되지 않음"
+    return f"확인 구간에서 사라지거나 반대 ({h}일 {mean:+.2%}p, t={t:+.1f})"
+
+
+def score_robust_report(df, label="", oos_days=365, keys=SCORE_KEYS):
+    """collect 결과 → 학습/확인 구간 분리 리포트. 진입은 ①신호일 종가 ②다음 날 시가."""
+    from stock.snapshot import group_excess  # 지연 임포트: snapshot 이 backtest 를 임포트한다
+    if df.empty:
+        return "[점수 재확인] 평가할 데이터가 부족합니다."
+    d0, d1 = df["date"].min(), df["date"].max()
+    cutoff = d1 - pd.Timedelta(days=oos_days)
+    lines = [f"[점수 재확인] 분석기 점수(수급·공시 제외, 가격 기반) {label} · 종목 {df['code'].nunique()}개",
+             f"학습 구간 {d0:%Y-%m-%d} ~ {cutoff:%Y-%m-%d} / 확인 구간(마지막 {oos_days // 365}년) {cutoff:%Y-%m-%d} ~ {d1:%Y-%m-%d}",
+             "매일 상위 3종목 − 그날 전체 평균 (겹치지 않게 5·10일 간격 표본). 학습 구간에서 5일 t값이 가장 높은 기준을 고르고 확인 구간에서 유지되는지 봅니다."]
+    for title, rname in (("① 신호일 종가에 진입", "r"), ("② 다음 날 시가에 진입 (리포트를 보고 실제로 사는 경우)", "ro")):
+        d = df.drop(columns=[f"r{h}" for h in HORIZONS]).rename(columns={f"ro{h}": f"r{h}" for h in HORIZONS}) if rname == "ro" else df
+        d = d.dropna(subset=[f"r{h}" for h in HORIZONS])
+        is_d, oos_d = d[d["date"] <= cutoff], d[d["date"] > cutoff]
+        lines.append(f"\n{title}")
+        cand = []
+        for key, label_k in keys:
+            a, b = rank_test(is_d, key), rank_test(oos_d, key)
+            lines.append(f"  {label_k:<14} 학습 {_cell_rank(a)} │ 확인 {_cell_rank(b)}")
+            if a[5]["top"] is not None:
+                cand.append((a[5]["top"][2], key, label_k, b))
+        if cand:
+            t, key, label_k, b = max(cand, key=lambda x: x[0])
+            lines.append(f"  → 학습에서 고른 기준: {label_k} (학습 5일 t={t:+.1f}) → {_persist(b)}")
+        else:
+            lines.append("  → 학습 구간 표본이 부족해 기준을 고르지 못함")
+        lines.append("  단계별 (해당 단계 종목 평균 − 그날 전체 평균):")
+        for st in STAGES:
+            parts = []
+            for tag, part in (("학습", is_d), ("확인", oos_d)):
+                seg = []
+                for h in HORIZONS:
+                    r = group_excess(part, part["stage"] == st, h)
+                    seg.append(f"{h}일 " + ("표본 부족" if r is None else f"{r[0]:+.2%}p(t={r[2]:+.1f})"))
+                parts.append(f"{tag} " + " ".join(seg))
+            lines.append(f"    {st:<6} " + " │ ".join(parts))
+    lines.append("\n※ 지금 유명한 종목만 본 결과(생존 편향), 여러 기준을 함께 비교하므로 우연히 하나쯤 좋게 나올 수 있습니다. 수급·공시는 과거 이력이 없어 빠졌고, 세금·슬리피지는 단순화했습니다. 과거 성과가 미래를 보장하지 않습니다.")
+    return "\n".join(lines)
+
+
+def run_score_robust(market, label=""):
+    tm = {"전체": {c: c for c in market}}
+    return score_robust_report(collect(market, tm), label)
