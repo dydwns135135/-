@@ -870,3 +870,26 @@ def test_score_walk_report_and_cli_wiring(monkeypatch, capsys):
     monkeypatch.setattr(bt, "run_score_walk", lambda market, label="": seen.update(codes=sorted(market), label=label) or "[점수 워크포워드] 스텁")
     m.main(["--demo", "--score-walk"])
     assert "스텁" in capsys.readouterr().out and "KOSPI" not in seen["codes"] and seen["label"] == "(한국)"
+
+
+def test_dart_fetch_summaries_reports_reason_and_caches(monkeypatch):
+    import stock.dart as d
+    d._CC.clear()
+    calls = {"cc": 0}
+
+    def fake_cc(key):
+        calls["cc"] += 1
+        d._CC[key] = {"005930": "00126380"}
+        return d._CC[key]
+    monkeypatch.setattr(d, "corp_codes", fake_cc)
+    monkeypatch.setattr(d, "recent_titles", lambda key, cc, days=90: ["유상증자결정", "분기보고서"])
+    out = d.fetch_summaries(["005930"], key="k")
+    assert out["005930"]["count"] == 2 and d.LAST_ERROR == ""
+    assert d.fetch_summaries([], key="k") == {} and calls["cc"] == 1       # 대상이 없으면 목록을 받지 않는다
+
+    def bad(key, cc, days=90):
+        raise RuntimeError("DART 응답 010: 등록되지 않은 키")
+    monkeypatch.setattr(d, "recent_titles", bad)
+    assert d.fetch_summaries(["005930"], key="k") == {} and "010" in d.LAST_ERROR
+    monkeypatch.delenv("DART_API_KEY", raising=False)
+    assert d.fetch_summaries(["005930"]) == {} and "없음" in d.LAST_ERROR

@@ -7,6 +7,7 @@ import os
 import pandas as pd
 
 from stock.analyze import analyze_themes, decide, market_regime
+from stock import dart
 from stock.dart import fetch_summaries
 from stock.naver import load_naver
 from stock.data import load_csv_dir, load_pykrx, synthetic_market
@@ -166,8 +167,8 @@ def run(a):
     print("\n[관찰 후보] 점수는 높지만 아직 덜 오른 종목 — 시험에서 이후 수익률이 평균보다 높다는 근거 없음(최근 1년은 평균 이하)")
     picks = stocks[stocks["stage"] == "선점 후보"].head(a.top)
     disc = fetch_summaries(list(picks["code"])) if a.dart and not us else {}
-    if a.dart and not us and not disc:
-        print("  (DART 조회 실패 또는 DART_API_KEY 없음 → 공시 미확인)")
+    if a.dart and not us and len(picks) and not disc:
+        print(f"  (공시 미확인 — {dart.LAST_ERROR or '조회된 종목 없음'})")
     if picks.empty:
         print("  없음")
     for _, r in picks.iterrows():
@@ -190,7 +191,10 @@ def run(a):
             ma = "20일선 위" if r["above_ma20"] else "20일선 아래"
             print(f"  {r['name']}({r['theme']}) {disp(r['stage'])} · 점수 {r['score']} | 5일 {r['ret5']:+.1%} · 20일 {r['ret20']:+.1%} | "
                   f"{ma} | 거래량 x{r['vol_ratio']:.1f} | 60일고점 {r['prox60']:.0%} | {fl}")
-            act, why = decide(r, reg, wdisc.get(r["code"]), kr=not us)
+            dsum = wdisc.get(r["code"])
+            if a.dart and not us:
+                print("    → 공시(90일): " + (f"{dsum['count']}건" + (f" · 호재성 {len(dsum['positive'])}" if dsum["positive"] else "") + (f" · 악재성 {len(dsum['negative'])}" if dsum["negative"] else "") if dsum else f"미확인 — {dart.LAST_ERROR or '조회 결과 없음'}"))
+            act, why = decide(r, reg, dsum, kr=not us)
             print(f"    → 관찰 우선순위: {act}  ({'; '.join(why)})")
             print(f"    → 흐름: {r['bias']} ({r['bias_pts']:+d}점: {', '.join(r['bias_why'])})")
     print("\n" + DISCLAIMER)
