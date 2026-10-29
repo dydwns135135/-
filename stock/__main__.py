@@ -191,6 +191,7 @@ def run(a):
     disc = fetch_summaries(list(picks["code"])) if a.dart and not us else {}
     if a.edgar and us:
         disc = edgar.fetch_summaries(list(picks["code"]))
+        pick_err = edgar.LAST_ERROR
         if len(picks) and not disc:
             print(f"  (공시 미확인 — {edgar.LAST_ERROR or '조회된 종목 없음'})")
     if a.dart and not us and len(picks) and not disc:
@@ -203,7 +204,7 @@ def run(a):
               f"거래량 x{r['vol_ratio']:.1f} | 60일고점 {r['prox60']:.0%} | {fl}"
               + ("" if pd.isna(r["indiv_ratio"]) else f" | 개인 {r['indiv_ratio']:+.1%}"))
         act, why = decide(r, reg, disc.get(r["code"]), kr=not us)
-        for ln in (us_disclosure_lines(disc.get(r["code"])) if a.edgar and us else []):
+        for ln in (us_disclosure_lines(disc.get(r["code"]), pick_err) if a.edgar and us else []):
             print(ln)
         print(f"    → 관찰 우선순위: {act}  ({'; '.join(why)})")
         print(f"    → 흐름: {r['bias']} ({r['bias_pts']:+d}점: {', '.join(r['bias_why'])})")

@@ -32,6 +32,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           ENABLED: ${{ vars.STOCK_ENABLED }}
           DEMO: ${{ inputs.demo }}
+          EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}  # SEC가 요구하는 연락처(예: "stock-analyzer 내이메일@도메인"). 없으면 403이 날 수 있음
         run: |
           if [ "${{ github.event_name }}" = "schedule" ] && [ "$ENABLED" != "true" ]; then echo "STOCK_ENABLED!=true, 건너뜀"; exit 0; fi
           SRC="--yahoo"; if [ "$DEMO" = "true" ]; then SRC="--demo --us"; fi

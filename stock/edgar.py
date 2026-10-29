@@ -1,4 +1,4 @@
-"""SEC EDGAR(미국 공시) 최근 공시·내부자 거래 조회. 무료·키 없음(SEC는 요청자를 알 수 있는 User-Agent를 요구: 환경변수 EDGAR_USER_AGENT로 바꿀 수 있음)."""
+"""SEC EDGAR(미국 공시) 최근 공시·내부자 거래 조회. 무료·키 없음(SEC는 연락처가 든 User-Agent를 요구한다: 환경변수 EDGAR_USER_AGENT="이름 이메일", 없으면 403이 날 수 있음)."""
 import os
 import re
 import time
