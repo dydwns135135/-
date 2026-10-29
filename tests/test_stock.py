@@ -762,3 +762,75 @@ def test_open_entry_ignores_zero_open_prices_instead_of_inf():
     assert np.isfinite(ev[["r5", "r10", "ex5", "ex10"]].to_numpy()).all() and all(np.isfinite(v) for v in base.values())
     # 0 시가로 진입하는 신호(B 종목의 12일째 신호)는 진입가가 없어 제외되고, 정상 신호는 남는다
     assert not ((ev["code"] == "B") & (ev["date"] == days[12])).any() and ((ev["code"] == "A") & (ev["date"] == days[12])).any()
+
+
+def test_score_components_sum_to_score_and_open_entry_in_collect():
+    import numpy as np
+    import pandas as pd
+    from stock.analyze import analyze_stock
+    from stock.backtest import collect
+    from stock.data import synthetic_market
+    m = synthetic_market()
+    r = analyze_stock(m["000660"][["open", "high", "low", "close", "volume"]])    # 수급 열이 없으면 만점 80
+    total = r["c_trend"] + r["c_near"] + r["c_volume"] + r["c_squeeze"] + r["c_flow"]
+    assert r["c_flow"] == 0 and abs(total / 80 * 100 - r["score"]) < 0.06
+    # collect: 구성 요소가 담기고, 다음 날 시가 진입 수익률이 시가와 종가를 구분해 계산된다
+    rng = np.random.default_rng(8)
+    days = pd.bdate_range("2025-01-01", periods=120)
+    c = 100 * np.cumprod(1 + rng.normal(0.001, 0.01, 120))
+    o = c * 1.01                                                                  # 시가가 종가와 다르게
+    df = pd.DataFrame({"open": o, "high": c * 1.01, "low": c * 0.99, "close": c, "volume": 1000.0}, index=days)
+    ev = collect({"A": df}, {"T": {"A": "a"}})
+    row = ev.iloc[0]
+    t = list(days).index(row["date"])
+    assert {"c_trend", "c_near", "c_volume", "c_squeeze"} <= set(ev.columns)
+    assert abs(row["r5"] - (c[t + 5] / c[t] - 1)) < 1e-12 and abs(row["ro5"] - (c[t + 5] / o[t + 1] - 1)) < 1e-12
+    df2 = df.copy(); df2.iloc[t + 1, df2.columns.get_loc("open")] = 0.0              # 시가 0 이면 그 신호만 제외(NaN)
+    assert np.isnan(collect({"A": df2}, {"T": {"A": "a"}}).query("date == @row.date").iloc[0]["ro5"])
+
+
+def test_score_robust_report_separates_lasting_from_vanishing_relationship():
+    import numpy as np
+    import pandas as pd
+    from stock.backtest import score_robust_report
+    days = pd.bdate_range("2023-06-01", periods=760)
+
+    def build(plant_until):
+        rng = np.random.default_rng(21)
+        rows = []
+        for d_i, d in enumerate(days):
+            for k in range(14):
+                score = float(rng.normal(50, 15))
+                beta = 0.0008 if d_i < plant_until else 0.0       # 점수가 높을수록 이후가 좋은 관계: 심은 구간에서만
+                rec = {"code": f"S{k}", "name": f"S{k}", "theme": "T", "date": d, "score": score, "bias_pts": int(rng.integers(-3, 4)),
+                       "stage": "선점 후보" if score > 65 else "관망", "c_trend": float(rng.uniform(0, 25)), "c_near": float(rng.uniform(0, 25)),
+                       "c_volume": float(rng.uniform(0, 20)), "c_squeeze": float(rng.uniform(0, 10))}
+                for h in (5, 10):
+                    rec[f"r{h}"] = beta * (score - 50) * h / 5 + rng.normal(0, 0.01)
+                    rec[f"ro{h}"] = rec[f"r{h}"] - 0.001
+                rows.append(rec)
+        return pd.DataFrame(rows)
+    out_all = score_robust_report(build(760), "(시험)")
+    out_is = score_robust_report(build(480), "(시험)")                                    # 관계가 학습 구간에만 있는 세상
+    assert out_all.count("확인 구간에서도 유지됨") == 2                                    # ①②모두, 학습에서 고른 기준 = 점수
+    assert "고른 기준: 점수(가격 기반)" in out_all
+    assert "확인 구간에서도 유지됨" not in out_is
+    assert "① 신호일 종가에 진입" in out_all and "② 다음 날 시가에 진입" in out_all and "선점 후보" in out_all
+
+
+def test_score_robust_cli_wiring(monkeypatch, capsys):
+    import stock.__main__ as m
+    import stock.backtest as bt
+    seen = {}
+    monkeypatch.setattr(bt, "run_score_robust", lambda market, label="": seen.update(codes=sorted(market), label=label) or "[점수 재확인] 스텁")
+    m.main(["--demo", "--score-robust"])
+    assert "[점수 재확인]" in capsys.readouterr().out and "KOSPI" not in seen["codes"] and seen["label"] == "(한국)" and len(seen["codes"]) == 21
+
+
+def test_run_score_robust_small_market_runs():
+    import stock.backtest as bt
+    from stock.data import synthetic_market
+    full = synthetic_market(n=420, themes={"A": {f"{i:06d}": str(i) for i in range(1, 9)}}, index="KOSPI")
+    mk = {c: d for c, d in full.items() if c != "KOSPI"}
+    out = bt.run_score_robust(mk, "(소형)")
+    assert "[점수 재확인]" in out and "학습 구간" in out and "② 다음 날 시가" in out

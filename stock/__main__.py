@@ -33,6 +33,7 @@ def main(argv=None):
     ap.add_argument("--scan", action="store_true", help="한국 시장 훑기: 네이버 테마에서 움직이는 테마·종목을 자동 수집(--naver 불필요)")
     ap.add_argument("--macd", action="store_true", help="TradingView TS Pro(MACD 교차) 신호 시험(3년치 데이터, --naver/--yahoo/--demo 와 함께)")
     ap.add_argument("--macd-robust", dest="macd_robust", action="store_true", help="MACD 재확인: 학습/확인 구간 분리 + 다음 날 시가 진입")
+    ap.add_argument("--score-robust", dest="score_robust", action="store_true", help="점수 재확인: 학습/확인 구간 분리 + 다음 날 시가 진입(3년치 데이터)")
     ap.add_argument("--us", action="store_true", help="미국 테마로 분석(--demo 와 함께 시험용)")
     ap.add_argument("--top", type=int, default=5, help="종목 표시 개수")
     ap.add_argument("--dart", action="store_true", help="DART 공시 확인(환경변수 DART_API_KEY 필요)")
@@ -57,13 +58,13 @@ def main(argv=None):
     print(buf.getvalue())
     if a.telegram:
         head = "🇺🇸 미국" if (a.yahoo or a.us) else "🇰🇷 한국"
-        notify.send(("📉 MACD 재확인(학습/확인 구간, 다음 날 시가)\n" if a.macd_robust else "📉 MACD 신호 시험\n" if a.macd else "🔎 한국 시장 훑기\n" if a.scan else f"📊 {head} 성과 확인\n" if a.backtest else f"📊 {head} 쌓은 데이터 시험(수급·훑기)\n" if a.evaluate else ("🇺🇸 오늘의 미국 종목 분석\n" if (a.yahoo or a.us) else "📈 오늘의 종목 분석\n")) + buf.getvalue())
+        notify.send(("📊 점수 재확인(학습/확인 구간, 다음 날 시가)\n" if a.score_robust else "📉 MACD 재확인(학습/확인 구간, 다음 날 시가)\n" if a.macd_robust else "📉 MACD 신호 시험\n" if a.macd else "🔎 한국 시장 훑기\n" if a.scan else f"📊 {head} 성과 확인\n" if a.backtest else f"📊 {head} 쌓은 데이터 시험(수급·훑기)\n" if a.evaluate else ("🇺🇸 오늘의 미국 종목 분석\n" if (a.yahoo or a.us) else "📈 오늘의 종목 분석\n")) + buf.getvalue())
 
 
 def run(a):
     us = a.yahoo or a.us
     themes_map, watchlist, idx_key, idx_name = (US_THEMES, US_WATCHLIST, US_INDEX, "S&P500") if us else (THEMES, WATCHLIST, "KOSPI", "KOSPI")
-    long = a.backtest or a.evaluate or a.macd or a.macd_robust  # 3년치 데이터가 필요한 모드
+    long = a.backtest or a.evaluate or a.macd or a.macd_robust or a.score_robust  # 3년치 데이터가 필요한 모드
     scan_stats = None
     if a.scan:
         from stock.scan import build_scan
@@ -81,10 +82,10 @@ def run(a):
         if a.evaluate:  # 쌓아 둔 훑기 스냅샷에 나온 종목 가격도 필요하다
             from stock.snapshot import scan_codes
             codes = sorted(set(codes) | set(scan_codes(a.evaluate)))
-        if a.macd or a.macd_robust:  # MACD 시험은 시가총액 상위 종목까지 넓혀 표본을 늘린다(실패하면 기존 목록만)
+        if a.macd or a.macd_robust or a.score_robust:  # 3년치 시험은 시가총액 상위 종목까지 넓혀 표본을 늘린다(실패하면 기존 목록만)
             from stock.scan import cap_universe
             codes = sorted(set(codes) | set(cap_universe()))
-        market = load_naver(codes, days=800 if long else 250, with_flow=not long, log=(lambda m: None) if (a.macd or a.macd_robust) else print)
+        market = load_naver(codes, days=800 if long else 250, with_flow=not long, log=(lambda m: None) if (a.macd or a.macd_robust or a.score_robust) else print)
     elif a.pykrx:
         market = load_pykrx([c for m in THEMES.values() for c in m])
     else:
@@ -96,6 +97,10 @@ def run(a):
         scan_snap = load_scan_snapshots(a.evaluate)
         if not scan_snap.empty:
             print("\n" + evaluate_scan(scan_snap, market))
+        return
+    if a.score_robust:
+        from stock.backtest import run_score_robust
+        print(run_score_robust({c: d for c, d in market.items() if c != idx_key}, label="(미국)" if us else "(한국)"))
         return
     if a.macd_robust:
         from stock.macdtest import run_macd_robust
