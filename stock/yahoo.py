@@ -173,8 +173,8 @@ def proxy_index(frames):
     return df
 
 
-def load_yahoo(tickers, delay=0.8, log=print, long=False):
-    kw = dict(days="3y", span=1100, keep=800) if long else {}  # long=True: 성과 확인용 3년치
+def load_yahoo(tickers, delay=0.8, log=print, long=False, years=3):
+    kw = dict(days=f"{years}y", span=int(years * 365), keep=int(years * 260)) if long else {}  # long=True: 성과 확인용 3년치
     out, errs = {}, []
     for t in tickers:
         try:

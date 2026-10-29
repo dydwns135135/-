@@ -13,8 +13,8 @@ WINDOW = 130  # analyze_stock 이 보는 최대 구간(60일선+여유)만 잘�
 HORIZONS = (5, 10)
 
 
-def collect(market, themes_map, horizons=HORIZONS, min_hist=70):
-    """종목·날짜별 (단계, 점수, 흐름, 이후 수익률) 표."""
+def collect(market, themes_map, horizons=HORIZONS, min_hist=70, sample_dates=None):
+    """종목·날짜별 (단계, 점수, 흐름, 이후 수익률) 표. sample_dates 를 주면 그 날짜만 계산한다(긴 기간 시험의 속도용, 모든 종목이 같은 날짜)."""
     rows = []
     for theme, members in themes_map.items():
         for code, name in members.items():
@@ -24,6 +24,8 @@ def collect(market, themes_map, horizons=HORIZONS, min_hist=70):
             c = df["close"].to_numpy()
             o = df["open"].to_numpy()
             for t in range(min_hist - 1, len(df) - max(horizons)):
+                if sample_dates is not None and df.index[t] not in sample_dates:
+                    continue
                 r = analyze_stock(df.iloc[max(0, t + 1 - WINDOW):t + 1])
                 if r is None:
                     continue
@@ -48,10 +50,11 @@ def summarize(df, key, horizons=HORIZONS):
     return pd.DataFrame(out)
 
 
-def rank_test(df, key="score", k=3, horizons=HORIZONS, min_stocks=10):
+def rank_test(df, key="score", k=3, horizons=HORIZONS, min_stocks=10, step=1):
     """날마다 종목을 key 로 줄 세워 상위 k·하위 k 의 이후 수익률이 그날 전체 평균보다 얼마나 높았는지 본다.
 
     h일 간격으로만 표본을 뽑아 겹치는 기간을 없애므로(독립에 가깝다) 단순 신호 집계보다 오차 계산이 정직하다.
+    step: 데이터가 이미 step 거래일 간격으로만 있을 때(긴 기간 시험) 간격을 h//step 으로 줄인다.
     """
     order = [key] if key == "score" else [key, "score"]
     out = {}
@@ -63,7 +66,7 @@ def rank_test(df, key="score", k=3, horizons=HORIZONS, min_stocks=10):
             g = g.sort_values(order, ascending=False)
             m = g[f"r{h}"].mean()
             rows.append((date, g.head(k)[f"r{h}"].mean() - m, g.tail(k)[f"r{h}"].mean() - m))
-        s = pd.DataFrame(rows, columns=["date", "top", "bottom"]).set_index("date").sort_index().iloc[::h]
+        s = pd.DataFrame(rows, columns=["date", "top", "bottom"]).set_index("date").sort_index().iloc[::max(1, h // step)]
         res = {"days": len(s)}
         for col in ("top", "bottom"):
             x = s[col]
@@ -203,3 +206,70 @@ def score_robust_report(df, label="", oos_days=365, keys=SCORE_KEYS):
 def run_score_robust(market, label=""):
     tm = {"전체": {c: c for c in market}}
     return score_robust_report(collect(market, tm), label)
+
+
+# ---------------------------------------------------------------------------------------------
+# 워크포워드: 해마다 그 해 이전 데이터만으로 기준을 고르고 그 해에 확인한다(긴 기간, 여러 시장 국면).
+def _wf_cell(r):
+    return "표본 부족" if r is None else f"{r[0]:+.2%}p(t={r[2]:+.1f})"
+
+
+def _wf_summary(label, vals):
+    ok = [v for v in vals if v is not None]
+    if len(ok) < 3:
+        return f"  {label:<14} 해 수 부족"
+    means = np.array([v[0] for v in ok])
+    return f"  {label:<14} 평균 {means.mean():+.2%}p · 플러스였던 해 {int((means > 0).sum())}/{len(ok)}"
+
+
+def walk_forward_report(df, label="", step=5, min_train_years=2):
+    """collect 결과(다음 날 시가 진입 수익률 ro5/ro10 사용) → 연도별 워크포워드. 데이터는 step 거래일 간격 표본이어야 한다."""
+    from stock.snapshot import group_excess
+    if df.empty:
+        return "[점수 워크포워드] 평가할 데이터가 부족합니다."
+    d = df.drop(columns=[f"r{h}" for h in HORIZONS]).rename(columns={f"ro{h}": f"r{h}" for h in HORIZONS})
+    d = d.dropna(subset=[f"r{h}" for h in HORIZONS])
+    d0, d1 = d["date"].min(), d["date"].max()
+    years = [y for y in sorted(d["date"].dt.year.unique()) if pd.Timestamp(year=int(y), month=1, day=1) - d0 >= pd.Timedelta(days=365 * min_train_years)]
+    lines = [f"[점수 워크포워드] 분석기 점수(수급·공시 제외, 가격 기반) {label} · 종목 {d['code'].nunique()}개 · {d0:%Y-%m-%d} ~ {d1:%Y-%m-%d}",
+             "해마다 그 해 이전 데이터만으로 5일 t값이 가장 높은 기준을 고르고(매일 상위 3종목 − 그날 평균), 그 해에 확인합니다. 진입은 다음 날 시가.",
+             "표의 값은 확인한 해의 5일 초과수익(t값). 한 해 표본은 작아 t값이 2를 넘기 어렵습니다."]
+    if not years:
+        lines.append(f"\n학습에 필요한 {min_train_years}년 이상의 앞 데이터가 있는 해가 없습니다(데이터 {(d1 - d0).days // 365}년치).")
+        return "\n".join(lines)
+    chosen_v, score_v, cand_v, hot_v = [], [], [], []
+    lines.append("\n해     고른 기준(학습)        고른 기준 확인   │ 점수 전체        │ 관찰 후보         │ 과열")
+    for y in years:
+        train, test = d[d["date"] < pd.Timestamp(year=int(y), month=1, day=1)], d[d["date"].dt.year == y]
+        cand = []
+        for key, name in SCORE_KEYS:
+            r = rank_test(train, key, step=step)[5]["top"]
+            if r is not None:
+                cand.append((r[2], key, name))
+        if not cand:
+            lines.append(f"{y}   학습 표본 부족")
+            continue
+        _, key, name = max(cand)
+        r_ch, r_sc = rank_test(test, key, step=step)[5]["top"], rank_test(test, "score", step=step)[5]["top"]
+        r_cd, r_hot = group_excess(test, test["stage"] == "선점 후보", 5, step), group_excess(test, test["stage"] == "과열", 5, step)
+        chosen_v.append(r_ch); score_v.append(r_sc); cand_v.append(r_cd); hot_v.append(r_hot)
+        lines.append(f"{y}   {name:<14} {_wf_cell(r_ch):<20} │ {_wf_cell(r_sc):<18} │ {_wf_cell(r_cd):<18} │ {_wf_cell(r_hot)}")
+    lines.append("\n연도별 요약 (확인한 해의 5일 초과수익):")
+    lines += [_wf_summary("학습에서 고른 기준", chosen_v), _wf_summary("점수 전체", score_v),
+              _wf_summary("관찰 후보 단계", cand_v), _wf_summary("과열 단계", hot_v)]
+    ok = [v for v in chosen_v if v is not None]
+    if len(ok) >= 3:
+        pos = sum(1 for v in ok if v[0] > 0) / len(ok)
+        mean = float(np.mean([v[0] for v in ok]))
+        verdict = ("여러 해에 걸쳐 대체로 플러스를 유지" if pos >= 0.7 and mean > 0 else
+                   "해마다 들쑥날쑥해 유지된다고 보기 어려움" if pos <= 0.55 or mean <= 0 else "애매함 — 더 지켜봐야 함")
+        lines.append(f"\n판정: 학습에서 고른 기준은 {verdict} (플러스 {pos:.0%}, 평균 {mean:+.2%}p)")
+    lines.append("※ 지금 유명한 종목만 본 결과(생존 편향), 기준 여러 개를 비교하므로 우연히 좋아 보일 수 있습니다. 수급·공시는 제외, 세금·슬리피지는 단순화했고 과거 성과가 미래를 보장하지 않습니다.")
+    return "\n".join(lines)
+
+
+def run_score_walk(market, label="", step=5):
+    all_dates = sorted(set().union(*[set(d.index) for d in market.values()]))
+    sample = set(all_dates[::step])
+    df = collect(market, {"전체": {c: c for c in market}}, sample_dates=sample)
+    return walk_forward_report(df, label, step)
