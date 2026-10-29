@@ -7,6 +7,7 @@ python -m stock --demo                 # 합성 데이터로 시연
 python -m stock --pykrx --out result   # 실데이터 (pip install pykrx)
 python -m stock --csv data/            # <종목코드>.csv + KOSPI.csv
 python -m stock --pykrx --dart         # + DART 최근 3개월 공시 확인 (DART_API_KEY 필요, opendart.fss.or.kr 무료 발급)
+python -m stock --yahoo --edgar         # 미국: SEC EDGAR 8-K 공시 + 내부자 매수·매도(Form 4) 요약 (키 없음, 일별 기관 수급은 미국에 공개 자료 없음)
 ```
 
 ## 판단 기준

@@ -8,6 +8,7 @@ import pandas as pd
 
 from stock.analyze import analyze_themes, decide, market_regime
 from stock import dart
+from stock import edgar
 from stock.dart import fetch_summaries
 from stock.naver import load_naver
 from stock.data import load_csv_dir, load_pykrx, synthetic_market
@@ -45,6 +46,7 @@ def main(argv=None):
     ap.add_argument("--score-robust", dest="score_robust", action="store_true", help="점수 재확인: 학습/확인 구간 분리 + 다음 날 시가 진입(3년치 데이터)")
     ap.add_argument("--us", action="store_true", help="미국 테마로 분석(--demo 와 함께 시험용)")
     ap.add_argument("--top", type=int, default=5, help="종목 표시 개수")
+    ap.add_argument("--edgar", action="store_true", help="미국 공시·내부자 거래(SEC EDGAR, 키 없음)")
     ap.add_argument("--dart", action="store_true", help="DART 공시 확인(환경변수 DART_API_KEY 필요)")
     ap.add_argument("--telegram", action="store_true", help="결과를 텔레그램으로 전송(TELEGRAM_BOT_TOKEN/CHAT_ID)")
     ap.add_argument("--out", help="결과 CSV 저장 폴더")
@@ -68,6 +70,26 @@ def main(argv=None):
     if a.telegram:
         head = "🇺🇸 미국" if (a.yahoo or a.us) else "🇰🇷 한국"
         notify.send(("📊 점수 워크포워드(연도별 확인)\n" if a.score_walk else "📊 점수 재확인(학습/확인 구간, 다음 날 시가)\n" if a.score_robust else "📉 MACD 재확인(학습/확인 구간, 다음 날 시가)\n" if a.macd_robust else "📉 MACD 신호 시험\n" if a.macd else "🔎 한국 시장 훑기\n" if a.scan else f"📊 {head} 성과 확인\n" if a.backtest else f"📊 {head} 쌓은 데이터 시험(수급·훑기)\n" if a.evaluate else ("🇺🇸 오늘의 미국 종목 분석\n" if (a.yahoo or a.us) else "📈 오늘의 종목 분석\n")) + buf.getvalue())
+
+
+def us_disclosure_lines(s, err=""):
+    """미국 종목의 SEC 공시·내부자 거래 요약 줄(없으면 미확인 사유)."""
+    if not s:
+        return [f"    → 공시(90일): 미확인 — {err or '조회 결과 없음'}"]
+    head = "해외 기업 공시(6-K/20-F)" if s["foreign"] else "8-K"
+    line = f"    → 공시(90일): {head} {s['count']}건"
+    if s["negative"]:
+        line += " · 주의 항목: " + ", ".join(s["negative"][:2])
+    elif s["notable"]:
+        line += " · 주요 항목: " + ", ".join(dict.fromkeys(s["notable"]).keys())
+    out = [line]
+    ins = s.get("insider")
+    if ins is not None and not s["foreign"]:
+        if ins["buys"] or ins["sells"]:
+            out.append(f"    → 내부자 거래(90일, 공개시장): 매수 {ins['buys']}건 {edgar.fmt_money(ins['buy_value'])} / 매도 {ins['sells']}건 {edgar.fmt_money(ins['sell_value'])}")
+        else:
+            out.append(f"    → 내부자 거래(90일, 공개시장): 매수·매도 없음 (Form 4 {ins['n']}건 확인, 옵션 행사·증여 등은 제외)")
+    return out
 
 
 def run(a):
@@ -167,6 +189,10 @@ def run(a):
     print("\n[관찰 후보] 점수는 높지만 아직 덜 오른 종목 — 시험에서 이후 수익률이 평균보다 높다는 근거 없음(최근 1년은 평균 이하)")
     picks = stocks[stocks["stage"] == "선점 후보"].head(a.top)
     disc = fetch_summaries(list(picks["code"])) if a.dart and not us else {}
+    if a.edgar and us:
+        disc = edgar.fetch_summaries(list(picks["code"]))
+        if len(picks) and not disc:
+            print(f"  (공시 미확인 — {edgar.LAST_ERROR or '조회된 종목 없음'})")
     if a.dart and not us and len(picks) and not disc:
         print(f"  (공시 미확인 — {dart.LAST_ERROR or '조회된 종목 없음'})")
     if picks.empty:
@@ -177,6 +203,8 @@ def run(a):
               f"거래량 x{r['vol_ratio']:.1f} | 60일고점 {r['prox60']:.0%} | {fl}"
               + ("" if pd.isna(r["indiv_ratio"]) else f" | 개인 {r['indiv_ratio']:+.1%}"))
         act, why = decide(r, reg, disc.get(r["code"]), kr=not us)
+        for ln in (us_disclosure_lines(disc.get(r["code"])) if a.edgar and us else []):
+            print(ln)
         print(f"    → 관찰 우선순위: {act}  ({'; '.join(why)})")
         print(f"    → 흐름: {r['bias']} ({r['bias_pts']:+d}점: {', '.join(r['bias_why'])})")
     hot = stocks[stocks["stage"].str.startswith("과열")]
@@ -186,6 +214,8 @@ def run(a):
     if len(watch):
         print("\n[관심 종목 현황]")
         wdisc = fetch_summaries(list(watch["code"])) if a.dart and not us else {}
+        if a.edgar and us:
+            wdisc = edgar.fetch_summaries(list(watch["code"]))
         for _, r in watch.iterrows():
             fl = "수급 n/a" if pd.isna(r["flow_ratio"]) else f"수급 {r['flow_ratio']:+.1%}"
             ma = "20일선 위" if r["above_ma20"] else "20일선 아래"
@@ -194,6 +224,9 @@ def run(a):
             dsum = wdisc.get(r["code"])
             if a.dart and not us:
                 print("    → 공시(90일): " + (f"{dsum['count']}건" + (f" · 호재성 {len(dsum['positive'])}" if dsum["positive"] else "") + (f" · 악재성 {len(dsum['negative'])}" if dsum["negative"] else "") if dsum else f"미확인 — {dart.LAST_ERROR or '조회 결과 없음'}"))
+            if a.edgar and us:
+                for ln in us_disclosure_lines(dsum, edgar.LAST_ERROR):
+                    print(ln)
             act, why = decide(r, reg, dsum, kr=not us)
             print(f"    → 관찰 우선순위: {act}  ({'; '.join(why)})")
             print(f"    → 흐름: {r['bias']} ({r['bias_pts']:+d}점: {', '.join(r['bias_why'])})")
