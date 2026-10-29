@@ -969,3 +969,30 @@ def test_dart_check_report_lists_dated_titles(monkeypatch):
     out = d.check_report(["036460", "999999"], key="k")
     assert "[036460] 최근 90일 공시 3건" in out and "2026-10-28 단일판매ㆍ공급계약체결 ＋호재성" in out
     assert "2026-10-01 유상증자결정 －악재성" in out and "[999999] DART 회사 코드 없음" in out
+
+
+def test_paper_trading_step_entry_exit_and_stats():
+    import numpy as np
+    import pandas as pd
+    from stock.paper import COLS, COST, HOLD, MAX_NEW, report, stats, step
+    days = pd.bdate_range("2026-10-01", periods=14)
+
+    def px(open_, close):
+        return pd.DataFrame({"open": open_, "close": close}, index=days)
+    a = px([100.0] * 14, [100.0 + i for i in range(14)])                    # 신호 다음 날 시가 100, 이후 종가 상승
+    prices = {"AAA": a, "KOSPI": pd.DataFrame({"close": np.linspace(1000, 1010, 14)}, index=days)}
+    sd = f"{days[2]:%Y-%m-%d}"
+    scan = pd.DataFrame({"date": [sd] * 5, "code": ["AAA", "B", "C", "D", "E"], "name": ["AAA", "B", "C", "D", "E"], "stage": ["선점 후보"] * 4 + ["관망"],
+                         "score": [70, 90, 80, 60, 99], "close": [100.0] * 5})
+    L, ev = step(pd.DataFrame(columns=COLS), scan, prices)
+    assert [n for n, _ in ev["new"]] == ["B", "C", "AAA"] and len(L) == MAX_NEW        # 점수 순 상위 3, 관망은 제외
+    L2, ev2 = step(L, scan, prices)
+    assert len(L2) == MAX_NEW and ev2["new"] == []                                   # 같은 날 다시 돌려도 중복 신호 없음
+    L3, ev3 = step(L2, scan.iloc[0:0], prices)
+    row = L3[L3["code"] == "AAA"].iloc[0]
+    assert row["status"] == "closed" and row["entry_date"] == f"{days[3]:%Y-%m-%d}" and row["entry_px"] == 100.0
+    assert row["exit_date"] == f"{days[2 + HOLD]:%Y-%m-%d}"                          # 신호일로부터 HOLD 거래일째
+    assert abs(row["ret_net"] - ((100.0 + 2 + HOLD) / 100.0 - 1 - COST)) < 1e-9
+    assert row["kospi_ret"] == row["kospi_ret"] and L3[L3["code"] == "B"].iloc[0]["status"] == "pending"   # 가격이 없는 종목은 그대로 대기
+    s = stats(L3)
+    assert s["n"] == 1 and s["open"] == 2 and "아직 적어" in report(L3, ev3) and "실제 매매·주문 없음" in report(L3, ev3)

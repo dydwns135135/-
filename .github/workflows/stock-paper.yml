@@ -1,0 +1,45 @@
+name: "stock-paper (한국 모의투자: 정해 둔 규칙대로 가상 매매 기록 → 텔레그램, 결과 저장)"
+
+# 실제 주문·실제 돈 없이, 훑기 스냅샷의 '관찰 후보'를 미리 정한 규칙(stock/paper.py 머리말)대로 가상 매매하고 장부를 stock-data 브랜치의 paper/ledger.csv 에 쌓는다.
+# 규칙은 운영 중 바꾸지 않는다. 한국시간 20:10(훑기 19:40 이후)에 평일마다 실행. 스케줄은 저장소 변수 STOCK_ENABLED=true 일 때만 동작(수동 실행은 항상 가능).
+on:
+  schedule:
+    - cron: "10 11 * * 1-5"   # UTC 11:10 = 한국 20:10 (월~금)
+  workflow_dispatch:
+
+permissions:
+  contents: write   # stock-data 브랜치에만 커밋한다(코드 브랜치는 건드리지 않음)
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-stock.txt
+      - run: pip install -r requirements-stock.txt
+
+      - name: Paper trade
+        env:
+          ENABLED: ${{ vars.STOCK_ENABLED }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$ENABLED" != "true" ]; then echo "STOCK_ENABLED!=true, 건너뜀"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git fetch origin stock-data; then
+            git worktree add -B stock-data ../data FETCH_HEAD
+          else
+            echo "stock-data 브랜치가 아직 없어 모의투자를 건너뜀(훑기 스냅샷이 먼저 쌓여야 함)"; exit 0
+          fi
+          python -m stock.paper ../data --telegram
+          cd ../data
+          git add paper
+          if git diff --cached --quiet; then echo "변경 없음"; exit 0; fi
+          git commit -m "모의투자 장부 $(date -u +%F)"
+          git push origin stock-data || { git pull --rebase origin stock-data && git push origin stock-data; }
