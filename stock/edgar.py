@@ -15,10 +15,20 @@ _TICKERS = {}
 LAST_ERROR = ""
 
 
+# 티커 목록(www.sec.gov)을 못 받을 때의 대비용. 공시 목록 응답의 tickers와 대조해 다른 회사면 버린다.
+FALLBACK_CIKS = {"NVDA": 1045810, "AMD": 2488, "AVGO": 1730168, "TSM": 1046179, "MU": 723125, "MSFT": 789019, "GOOGL": 1652044,
+                 "AMZN": 1018724, "META": 1326801, "AAPL": 320193, "VST": 1692819, "CEG": 1868275, "GEV": 1996810, "ETN": 1551182,
+                 "LMT": 936468, "RTX": 101829, "NOC": 1133421, "PLTR": 1321655, "RKLB": 1819994, "LLY": 59478, "NVO": 1641339,
+                 "ABBV": 1551152, "ISRG": 1035267}
+
+
 def _get(url, ua=None):
     time.sleep(0.15)  # SEC 한도(초당 10회)보다 충분히 느리게
     r = requests.get(url, headers={"User-Agent": ua or os.environ.get("EDGAR_USER_AGENT") or UA_DEFAULT}, timeout=30)
-    r.raise_for_status()
+    if r.status_code >= 400:  # SEC의 안내 문구를 남겨 원인(연락처 형식·IP 차단 등)을 구분할 수 있게
+        body = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", r.text))[:140]
+        host = re.sub(r"^https://([^/]+).*$", r"\1", url)
+        raise RuntimeError(f"HTTP {r.status_code} {host}: {body}")
     return r
 
 
@@ -30,9 +40,12 @@ def ticker_ciks():
     return _TICKERS
 
 
-def recent_filings(cik, days=90):
-    """최근 days일 공시 목록: [{form, date, items, acc, doc}]"""
-    j = _get(f"https://data.sec.gov/submissions/CIK{cik:010d}.json").json()["filings"]["recent"]
+def recent_filings(cik, days=90, ticker=None):
+    """최근 days일 공시 목록: [{form, date, items, acc, doc}]. ticker를 주면 응답의 티커와 대조한다."""
+    full = _get(f"https://data.sec.gov/submissions/CIK{cik:010d}.json").json()
+    if ticker and ticker.upper() not in [x.upper() for x in full.get("tickers", [])]:
+        raise RuntimeError(f"CIK {cik}의 티커 {full.get('tickers')}가 {ticker}와 다름")
+    j = full["filings"]["recent"]
     since = (date.today() - timedelta(days=days)).isoformat()
     out = []
     for i, f in enumerate(j["form"]):
@@ -104,8 +117,8 @@ def fetch_summaries(tickers, days=90, insiders=True):
     try:
         cks = ticker_ciks()
     except Exception as e:
-        LAST_ERROR = f"티커 목록 실패: {type(e).__name__} {str(e)[:80]}"
-        return {}
+        LAST_ERROR = f"티커 목록 실패({str(e)[:200]})"
+        cks = FALLBACK_CIKS  # 공시 목록 서버(data.sec.gov)는 열려 있을 수 있어 내장 목록으로 계속 시도
     out = {}
     for t in tickers:
         cik = cks.get(t.upper().replace("-", "."))  # BRK-B → BRK.B 식 표기 차이 대비
@@ -113,12 +126,14 @@ def fetch_summaries(tickers, days=90, insiders=True):
             LAST_ERROR = f"{t}: SEC 티커 목록에 없음"
             continue
         try:
-            fl = recent_filings(cik, days)
+            fl = recent_filings(cik, days, ticker=t)
             s = summarize_8k(fl)
             s["insider"] = insider_trades(cik, fl) if insiders else None
             out[t] = s
         except Exception as e:
-            LAST_ERROR = f"{t}: {type(e).__name__} {str(e)[:80]}"
+            LAST_ERROR = (LAST_ERROR + " / " if LAST_ERROR and LAST_ERROR.startswith("티커 목록 실패") else "") + f"{t}: {str(e)[:160]}"
+            if "HTTP 403" in str(e) or "HTTP 429" in str(e):
+                break  # 서버 전체가 막힌 경우 종목마다 반복하지 않는다
     return out
 
 

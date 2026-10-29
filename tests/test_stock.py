@@ -924,9 +924,39 @@ def test_edgar_parse_summarize_and_fetch(monkeypatch, capsys):
     assert ins["buys"] == 1 and ins["sells"] == 1 and ins["buy_value"] == 50000.0 and ins["sell_value"] == 12000.0
     assert urls == ["https://www.sec.gov/Archives/edgar/data/123/000126000003/f4.xml"]      # xsl 폴더 없는 원본 주소
     monkeypatch.setattr(e, "ticker_ciks", lambda: {"LLY": 123})
-    monkeypatch.setattr(e, "recent_filings", lambda cik, days=90: fl)
+    monkeypatch.setattr(e, "recent_filings", lambda cik, days=90, ticker=None: fl)
     out = e.fetch_summaries(["LLY", "ZZZZ"])
     assert out["LLY"]["insider"]["buys"] == 1 and "ZZZZ" not in out and "ZZZZ" in e.LAST_ERROR
     lines = us_disclosure_lines(out["LLY"])
     assert "8-K 2건" in lines[0] and "주의 항목" in lines[0] and "매수 1건" in lines[1]
     assert "미확인" in us_disclosure_lines(None, "접속 실패")[0]
+
+
+def test_edgar_blocked_reports_reason_and_uses_fallback(monkeypatch):
+    import stock.edgar as e
+
+    class Resp:
+        def __init__(self, code, text="", js=None):
+            self.status_code, self.text, self._js = code, text, js
+
+        def json(self):
+            return self._js
+    monkeypatch.setattr(e.time, "sleep", lambda s: None)
+    monkeypatch.setattr(e.requests, "get", lambda url, headers=None, timeout=0: Resp(403, "<html><body>Undeclared Automated Tool</body></html>"))
+    try:
+        e._get("https://www.sec.gov/files/company_tickers.json")
+        assert False
+    except RuntimeError as ex:
+        assert "HTTP 403 www.sec.gov" in str(ex) and "Undeclared Automated Tool" in str(ex)
+    e._TICKERS.clear()
+    out = e.fetch_summaries(["AAPL", "NVDA"])
+    assert out == {} and "티커 목록 실패" in e.LAST_ERROR and "data.sec.gov" in e.LAST_ERROR     # 내장 CIK로 data.sec.gov까지 시도했다는 뜻
+
+    def sub(url, headers=None, timeout=0):
+        if "company_tickers" in url:
+            return Resp(403, "blocked")
+        return Resp(200, js={"tickers": ["AAPL"], "filings": {"recent": {"form": ["8-K"], "filingDate": [e.date.today().isoformat()],
+                                                                       "items": ["2.02"], "accessionNumber": ["1-1-1"], "primaryDocument": ["a.htm"]}}})
+    monkeypatch.setattr(e.requests, "get", sub)
+    out = e.fetch_summaries(["AAPL", "NVDA"], insiders=False)
+    assert out["AAPL"]["count"] == 1 and "NVDA" not in out and "다름" in e.LAST_ERROR   # 응답 티커와 다르면 버린다
