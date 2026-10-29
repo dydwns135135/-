@@ -586,3 +586,98 @@ def test_report_and_saved_snapshot_share_lagged_flow(capsys, monkeypatch, tmp_pa
     th, ths = pd.read_csv(tmp_path / "themes.csv"), pd.read_csv(tmp_path / "scan_themes.csv")
     assert th["theme"].tolist() == ths["theme"].tolist()                      # 저장 테마 순위 = 리포트 테마 순위
     assert snap["theme_rank"].min() == 1
+
+
+def test_ts_pro_series_matches_pine_ema_and_crossover_definition():
+    import numpy as np
+    import pandas as pd
+    from stock.macdtest import crosses, ts_pro_series
+    rng = np.random.default_rng(5)
+    c = pd.Series(100 + np.cumsum(rng.normal(0, 1, 120)), index=pd.bdate_range("2025-01-01", periods=120))
+
+    def pine_ema(x, n):               # Pine ta.ema: 첫 값으로 시작, alpha = 2/(n+1)
+        out, a = [x[0]], 2 / (n + 1)
+        for v in x[1:]:
+            out.append(a * v + (1 - a) * out[-1])
+        return np.array(out)
+    ref_macd = pine_ema(c.to_numpy(), 12) - pine_ema(c.to_numpy(), 26)
+    macd, sig, pct = ts_pro_series(c)
+    assert np.allclose(macd, ref_macd) and np.allclose(sig, pine_ema(ref_macd, 9)) and np.allclose(pct, macd / c * 100)
+    m = pd.Series([0, -1, -2, 1, 2, 3, 1, 0, -1.0]); s = pd.Series([0, 0, 0, 0, 0, 0, 0, 0, 0.0])
+    bull, bear = crosses(m, s)   # ta.crossover: 지금 위 & 직전 같거나 아래, crossunder 는 반대
+    assert bull.tolist() == [False, False, False, True, False, False, False, False, False]
+    assert bear.tolist() == [False, True, False, False, False, False, False, False, True]
+
+
+def test_collect_events_finds_planted_edge_dedupes_and_ignores_noise():
+    import numpy as np
+    import pandas as pd
+    from stock.macdtest import collect_events, verdict
+    rng = np.random.default_rng(6)
+    n, days = 400, pd.bdate_range("2024-01-01", periods=400)
+    flags, market = {}, {}
+    for k in range(14):
+        ret = rng.normal(0, 0.01, n)
+        pick = np.sort(rng.choice(np.arange(80, n - 15), 8, replace=False))
+        pick = np.array([p for i, p in enumerate(pick) if i == 0 or p - pick[i - 1] > 12])   # 신호끼리 12일 이상 떨어지게
+        ret[pick + 1] += 0.04                                                    # 신호 다음 날 +4%가 심어진 세상
+        c = 100 * np.cumprod(1 + ret)
+        market[f"S{k}"] = pd.DataFrame({"open": c, "high": c, "low": c, "close": c, "volume": 1.0}, index=days)
+        f = np.zeros(n, dtype=bool); f[pick] = True; flags[f"S{k}"] = f
+    fn = lambda df: {"BUY 심음": pd.Series(flags[df.attrs["code"]] if "code" in df.attrs else False, index=df.index)}
+    for k, df in market.items():
+        df.attrs["code"] = k
+    ev, base = collect_events(market, fn)
+    x = ev[ev["variant"] == "BUY 심음"]
+    assert len(x) > 40 and x["ex5"].mean() > 0.03 and x["ex10"].mean() > 0.03
+    assert "높음" in verdict(ev, "BUY 심음")
+    # 겹침 제거: 같은 종목에서 10거래일 안의 재신호는 센 번호로 안 잡힌다
+    close = market["S0"]["close"]
+    dup = {"BUY 겹침": pd.Series([i in (100, 103, 105, 140) for i in range(n)], index=days)}
+    one = pd.DataFrame({"x": close})
+    ev2, _ = collect_events({"S0": market["S0"], "S1": market["S1"]}, lambda df: dup)
+    assert sorted(ev2[ev2["code"] == "S0"]["date"].dt.strftime("%Y-%m-%d").tolist()) == [f"{days[100]:%Y-%m-%d}", f"{days[140]:%Y-%m-%d}"]
+    noise = {"BUY 무작위": pd.Series(rng.random(n) < 0.05, index=days)}       # 신호가 아무 정보도 없으면 초과수익은 0 근처
+    ev3, _ = collect_events(market, lambda df: noise)
+    assert abs(ev3["ex10"].mean()) < 0.01
+
+
+def test_round_trips_cost_hold_and_comparison():
+    import pandas as pd
+    from stock.macdtest import round_trips
+    days = pd.bdate_range("2025-01-01", periods=10)
+    a = pd.DataFrame({"close": [100, 100, 100, 110, 110, 110, 121, 121, 121, 121.0]}, index=days)
+    b = pd.DataFrame({"close": [100.0] * 10}, index=days)
+    fl = lambda df: {"B": pd.Series([False, False, True, False, False, False, False, False, False, False] if df["close"].iloc[3] == 110 else [False] * 10, index=df.index),
+                     "S": pd.Series([False] * 6 + [True] + [False] * 3 if df["close"].iloc[3] == 110 else [False] * 10, index=df.index)}
+    t = round_trips({"A": a, "B": b}, fl, buy="B", sell="S", cost=0.01, warmup=0)
+    assert len(t) == 1 and t["hold"].iloc[0] == 4
+    assert abs(t["ret"].iloc[0] - (121 / 100 - 1 - 0.01)) < 1e-12
+    assert abs(t["ex"].iloc[0] - (0.21 - 0.01 - 0.105)) < 1e-12              # 같은 기간 두 종목 평균(+10.5%)과 비교
+
+
+def test_cap_universe_pages_filters_etf_and_survives_errors():
+    from stock.scan import cap_universe
+    def fake_get(path, **p):
+        if "KOSPI" in path:
+            if p["page"] == 1:
+                return {"stocks": [{"stockEndType": "stock", "itemCode": "005930", "stockName": "삼성전자"},
+                                   {"stockEndType": "etf", "itemCode": "069500", "stockName": "KODEX"},
+                                   {"stockEndType": "stock", "itemCode": "000660", "stockName": "SK하이닉스"}]}
+            if p["page"] == 2:
+                return {"stocks": [{"stockEndType": "stock", "itemCode": "000660", "stockName": "SK하이닉스"},
+                                   {"stockEndType": "stock", "itemCode": "035420", "stockName": "NAVER"}]}
+            return {"stocks": []}
+        raise RuntimeError("HTTP500")                                          # 코스닥은 실패해도 코스피 결과는 남는다
+    got = cap_universe(n_kospi=3, n_kosdaq=2, get=fake_get)
+    assert list(got) == ["005930", "000660", "035420"] and "069500" not in got
+    assert cap_universe(get=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x"))) == {}
+
+
+def test_macd_cli_demo(capsys):
+    from stock.__main__ import main
+    main(["--demo", "--macd"])
+    out = capsys.readouterr().out
+    assert "[MACD 신호 시험]" in out and "왕복 매매" in out and "TS Pro(0선+1.0%)" in out and "(한국)" in out
+    main(["--demo", "--us", "--macd"])
+    assert "(미국)" in capsys.readouterr().out

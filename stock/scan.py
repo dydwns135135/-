@@ -71,6 +71,27 @@ def find_stocks(j):
     return out
 
 
+def cap_universe(n_kospi=100, n_kosdaq=50, get=None):
+    """시가총액 상위 보통주(코스피 n_kospi + 코스닥 n_kosdaq). 실패하면 빈 dict. 오늘 기준 목록이라 과거 시험에는 생존 편향이 있다."""
+    get = get or _jget
+    out = {}
+    for cat, n in (("KOSPI", n_kospi), ("KOSDAQ", n_kosdaq)):
+        got = {}
+        for page in range(1, 6):
+            try:
+                items = find_stocks(get(f"/api/stocks/marketValue/{cat}", page=page, pageSize=min(n, 100)))
+            except Exception:
+                break
+            new = [x for x in items if x[0] not in got]
+            if not new:
+                break
+            got.update(dict(new))
+            if len(got) >= n:
+                break
+        out.update(dict(list(got.items())[:n]))
+    return out
+
+
 def pick_themes(groups, n=30, min_total=3, min_breadth=0.5):
     """구성 종목이 min_total 개 이상이고 상승 종목 비율이 min_breadth 이상인 테마 중 등락률 상위 n개."""
     ok = [g for g in groups if g["total"] >= min_total and g["rate"] is not None and g["rise"] / g["total"] >= min_breadth]
