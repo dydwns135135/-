@@ -9,6 +9,7 @@ python -m stock --csv data/            # <종목코드>.csv + KOSPI.csv
 python -m stock --pykrx --dart         # + DART 최근 3개월 공시 확인 (DART_API_KEY 필요, opendart.fss.or.kr 무료 발급)
 python -m stock --yahoo --edgar         # 미국 SEC EDGAR 공시·내부자 거래(Form 4). GitHub Actions 서버에서는 SEC가 403으로 막아 워크플로에선 쓰지 않음(로컬 PC에서만 시험)
 python -m stock.paper <stock-data 폴더> --telegram   # 한국 모의투자: 관찰 후보를 정해 둔 규칙대로 가상 매매 기록(워크플로 stock-paper 가 매일 실행, 주문 없음)
+python -m stock.paper <stock-data 폴더> --us --telegram   # 미국 모의투자(워크플로 stock-paper-us), 장부는 paper/ledger_us.csv
 ```
 
 ## 판단 기준

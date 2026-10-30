@@ -997,3 +997,18 @@ def test_paper_trading_step_entry_exit_and_stats():
     assert row["kospi_ret"] == row["kospi_ret"] and L3[L3["code"] == "B"].iloc[0]["status"] == "pending"   # 가격이 없는 종목은 그대로 대기
     s = stats(L3)
     assert s["n"] == 1 and s["open"] == 2 and "아직 적어" in report(L3, ev3) and "실제 매매·주문 없음" in report(L3, ev3)
+
+
+def test_paper_us_runs_with_own_ledger(tmp_path, monkeypatch):
+    import stock.paper as pp
+    import stock.yahoo as y
+    from stock.data import synthetic_market
+    from stock.us_themes import US_THEMES
+    mk = synthetic_market(themes=US_THEMES, index="SPX", flow=False, n=300)
+    monkeypatch.setattr(y, "load_yahoo", lambda tickers, log=print, **k: mk)
+    out = pp.run_us(str(tmp_path))
+    assert "[모의투자·미국]" in out and "실제 매매·주문 없음" in out
+    assert (tmp_path / "paper" / "ledger_us.csv").exists() and not (tmp_path / "paper" / "ledger.csv").exists()
+    n1 = len(pp.load_ledger(str(tmp_path), "ledger_us.csv"))
+    assert "누적" in pp.run_us(str(tmp_path))                                  # 같은 날 다시 돌려도 장부가 늘지 않는다
+    assert len(pp.load_ledger(str(tmp_path), "ledger_us.csv")) == n1
