@@ -225,7 +225,8 @@ def test_report_marks_missing_and_proxy(capsys, monkeypatch):
     monkeypatch.setattr(m, "synthetic_market", lambda *a, **k: mk)
     m.main(["--demo", "--us"])
     out = capsys.readouterr().out
-    assert "[수집] 21/23종목 — 누락: LMT, RTX" in out and "⚠️종목 3/5" in out and "S&P500 대용" in out
+    total = sum(len(v) for v in US_THEMES.values())
+    assert f"[수집] {total - 2}/{total}종목 — 누락: LMT, RTX" in out and "⚠️종목 3/5" in out and "S&P500 대용" in out
 
 
 def test_backtest_forward_returns_and_no_lookahead():
