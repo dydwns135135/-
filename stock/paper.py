@@ -20,6 +20,23 @@ COLS = ["code", "name", "signal_date", "signal_close", "score", "status", "entry
 MIN_FOR_VERDICT = 60  # 이 건수 전에는 평균이 우연인지 가를 수 없다
 
 
+def trim_partial(market, tz, close_hour, now=None):
+    """장이 끝나기 전에 받은 '오늘' 봉은 아직 완성되지 않았으므로 버린다(신호·진입·청산이 장중 값으로 만들어지는 것을 막는다).
+
+    tz 현지 시각이 close_hour 이전이면 오늘 날짜 이후의 봉을 모두 제외한 새 dict 를 돌려준다.
+    """
+    now = now if now is not None else pd.Timestamp.now(tz=tz)
+    if now.hour >= close_hour:
+        return market
+    today = pd.Timestamp(now.date())
+    out = {}
+    for k, df in market.items():
+        d = df[df.index < today]
+        d.attrs = dict(df.attrs)
+        out[k] = d
+    return out
+
+
 def load_ledger(path, name="ledger.csv"):
     f = os.path.join(path, "paper", name)
     if not os.path.exists(f):
@@ -40,8 +57,12 @@ def step(ledger, scan, prices, bench="KOSPI"):
     L = ledger.copy()
     for c in ("signal_date", "entry_date", "exit_date"):
         L[c] = L[c].astype("object")
-    ev = {"entered": [], "closed": [], "new": []}
+    ev = {"entered": [], "closed": [], "new": [], "dropped": []}
     kospi = prices.get(bench)
+    if kospi is not None and len(kospi):  # 완성된 마지막 봉보다 늦은 날짜로 만들어진 대기 신호(장중 값)는 취소하고 다시 만든다
+        late = (L["status"] == "pending") & (pd.to_datetime(L["signal_date"]) > kospi.index[-1])
+        ev["dropped"] = list(L.loc[late, "name"])
+        L = L[~late].reset_index(drop=True)
     for i, r in L.iterrows():
         px = prices.get(r["code"])
         if px is None or r["status"] not in ("pending", "open"):
@@ -107,7 +128,9 @@ def report(ledger, ev, market="한국", bench_name="KOSPI"):
         lines.append("가상 진입: " + ", ".join(ev["entered"]))
     for n, r, k in ev["closed"]:
         lines.append(f"가상 청산: {n} {r:+.1%}" + ("" if pd.isna(k) else f" (같은 기간 {bench_name} {k:+.1%})"))
-    if not (ev["new"] or ev["entered"] or ev["closed"]):
+    if ev.get("dropped"):
+        lines.append("장중 값으로 잘못 만든 신호 취소: " + ", ".join(ev["dropped"]))
+    if not (ev["new"] or ev["entered"] or ev["closed"] or ev.get("dropped")):
         lines.append("오늘은 새 신호·진입·청산이 없습니다.")
     lines.append(f"누적: 청산 {s['n']}건 · 진행 중 {s['open']}건")
     if s["n"]:
@@ -126,6 +149,7 @@ def run_us(path, log=print):
     from stock.us_themes import US_THEMES
     from stock.yahoo import load_yahoo
     market = load_yahoo([c for m in US_THEMES.values() for c in m], log=log)
+    market = trim_partial(market, "America/New_York", 17)  # 미국 장 마감(동부 16:00) 이후에 만든 봉만 쓴다
     _, stocks = analyze_themes(market, US_THEMES)
     snap = build_snapshot(stocks.drop_duplicates("code"), market)
     last = snap[snap["date"] == snap["date"].max()]
@@ -144,7 +168,7 @@ def run(path, log=print):
     last = scan[scan["date"] == scan["date"].max()]
     L = load_ledger(path)
     need = sorted(set(L.loc[L["status"].isin(["pending", "open"]), "code"]) | set(last.loc[last["stage"] == "선점 후보", "code"]))
-    prices = load_naver(need, days=40, with_flow=False, log=log) if need else {}
+    prices = trim_partial(load_naver(need, days=40, with_flow=False, log=log), "Asia/Seoul", 16) if need else {}
     L2, ev = step(L, last, prices)
     save_ledger(path, L2)
     return report(L2, ev)

@@ -1012,3 +1012,21 @@ def test_paper_us_runs_with_own_ledger(tmp_path, monkeypatch):
     n1 = len(pp.load_ledger(str(tmp_path), "ledger_us.csv"))
     assert "누적" in pp.run_us(str(tmp_path))                                  # 같은 날 다시 돌려도 장부가 늘지 않는다
     assert len(pp.load_ledger(str(tmp_path), "ledger_us.csv")) == n1
+
+
+def test_paper_ignores_partial_today_bar_and_cancels_intraday_signal():
+    import numpy as np
+    import pandas as pd
+    from stock.paper import COLS, step, trim_partial
+    days = pd.bdate_range("2026-10-26", periods=5)                      # 10/26~10/30, 마지막 날(10/30)이 장중 봉
+    df = pd.DataFrame({"open": 100.0, "close": [100, 101, 102, 103, 104.0]}, index=days)
+    mk = {"AAA": df, "SPX": pd.DataFrame({"close": [1.0] * 5}, index=days)}
+    early = pd.Timestamp("2026-10-30 09:58", tz="America/New_York")
+    late = pd.Timestamp("2026-10-30 18:00", tz="America/New_York")
+    assert trim_partial(mk, "America/New_York", 17, now=early)["AAA"].index[-1] == pd.Timestamp("2026-10-29")
+    assert trim_partial(mk, "America/New_York", 17, now=late)["AAA"].index[-1] == pd.Timestamp("2026-10-30")
+    L = pd.DataFrame([["AAA", "에이", "2026-10-30", 104.0, 66.0, "pending", None, np.nan, None, np.nan, np.nan, np.nan]], columns=COLS)
+    L2, ev = step(L, pd.DataFrame(columns=["date", "code", "name", "stage", "score", "close"]), trim_partial(mk, "America/New_York", 17, now=early), bench="SPX")
+    assert len(L2) == 0 and ev["dropped"] == ["에이"]                      # 장중 값으로 만든 대기 신호는 취소
+    L3, _ = step(L, pd.DataFrame(columns=["date", "code", "name", "stage", "score", "close"]), mk, bench="SPX")
+    assert len(L3) == 1                                                   # 완성된 봉이면 그대로 둔다
