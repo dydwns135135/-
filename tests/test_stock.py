@@ -825,7 +825,7 @@ def test_score_robust_cli_wiring(monkeypatch, capsys):
     seen = {}
     monkeypatch.setattr(bt, "run_score_robust", lambda market, label="": seen.update(codes=sorted(market), label=label) or "[점수 재확인] 스텁")
     m.main(["--demo", "--score-robust"])
-    assert "[점수 재확인]" in capsys.readouterr().out and "KOSPI" not in seen["codes"] and seen["label"] == "(한국)" and len(seen["codes"]) == 21
+    assert "[점수 재확인]" in capsys.readouterr().out and "KOSPI" not in seen["codes"] and seen["label"] == "(한국)" and len(seen["codes"]) == sum(len(v) for v in __import__("stock.themes", fromlist=["THEMES"]).THEMES.values())
 
 
 def test_run_score_robust_small_market_runs():
