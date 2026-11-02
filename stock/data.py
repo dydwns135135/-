@@ -51,7 +51,7 @@ def synthetic_market(n=260, seed=7, themes=None, index="KOSPI", flow=True):
     idx = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=n)
     themes = themes or THEMES
     kr = {"HBM": (0.0035, 0.0), "반도체 전공정": (0.0015, 0.0), "2차전지": (0.0, 1.0),
-          "방산": (0.0003, 0.0), "바이오": (-0.0006, 0.0)}
+          "방산": (0.0003, 0.0), "로봇": (0.0003, 0.0), "바이오": (-0.0006, 0.0)}
     seq = [(0.0035, 0.0), (0.0015, 0.0), (0.0, 1.0), (0.0003, 0.0), (-0.0006, 0.0)]  # 초입·초입·과열·횡보·약세
     plan = kr if themes is THEMES else {t: seq[i % len(seq)] for i, t in enumerate(themes)}
     out = {}
