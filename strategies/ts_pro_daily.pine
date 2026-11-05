@@ -1,0 +1,28 @@
+//@version=5
+indicator("TS Pro Daily", "TS Daily", overlay=true)
+
+fastLen = input.int(12, "Fast EMA", minval=1)
+slowLen = input.int(26, "Slow EMA", minval=1)
+sigLen = input.int(9, "Signal EMA", minval=1)
+pctMin = input.float(1.0, "MACD % 기준", minval=0.0, step=0.1)
+zeroOn = input.bool(true, "0선 필터")
+
+macd = ta.ema(close, fastLen) - ta.ema(close, slowLen)
+signal = ta.ema(macd, sigLen)
+macdPct = close != 0 ? macd / close * 100 : 0.0
+
+bull = ta.crossover(macd, signal)
+bear = ta.crossunder(macd, signal)
+passPct = math.abs(macdPct) >= pctMin
+passL = not zeroOn or macd > 0
+passS = not zeroOn or macd < 0
+okBar = timeframe.isdaily and barstate.isconfirmed
+
+buy = okBar and bull and passPct and passL
+sell = okBar and bear and passPct and passS
+
+plotshape(buy, "BUY", shape.triangleup, location.belowbar, color.green, size=size.small, text="BUY", textcolor=color.white)
+plotshape(sell, "SELL", shape.triangledown, location.abovebar, color.red, size=size.small, text="SELL", textcolor=color.white)
+
+alertcondition(buy, "BUY Signal", "BUY: {{ticker}} (1D 마감)")
+alertcondition(sell, "SELL Signal", "SELL: {{ticker}} (1D 마감)")
