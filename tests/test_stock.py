@@ -1030,3 +1030,36 @@ def test_paper_ignores_partial_today_bar_and_cancels_intraday_signal():
     assert len(L2) == 0 and ev["dropped"] == ["에이"]                      # 장중 값으로 만든 대기 신호는 취소
     L3, _ = step(L, pd.DataFrame(columns=["date", "code", "name", "stage", "score", "close"]), mk, bench="SPX")
     assert len(L3) == 1                                                   # 완성된 봉이면 그대로 둔다
+
+
+def test_briefing_kr_reads_scan_and_flags_disclosures(tmp_path):
+    import pandas as pd
+    from stock.briefing import kr_briefing
+    from stock.snapshot import SCAN_COLS
+    (tmp_path / "scan" / "themes").mkdir(parents=True)
+    rows = []
+    for code, name, stage, score, ret5, ret20 in [("000001", "에이", "선점 후보", 70.0, 0.02, 0.05), ("000002", "비이", "선점 후보", 65.0, 0.01, 0.03),
+                                                 ("000003", "씨이", "과열(추격금지)", 50.0, 0.30, 0.40), ("000004", "디이", "관망", 10.0, -0.02, -0.10)]:
+        rows.append({c: float("nan") for c in SCAN_COLS} | {"date": "2026-11-04", "code": code, "name": name, "theme": "T", "close": 1000.0, "score": score, "stage": stage,
+                                                              "ret5": ret5, "ret20": ret20, "vol_ratio": 1.5, "prox60": 0.9, "flow_ratio": 0.05, "both_buy": True,
+                                                              "best_theme": "테마X", "themes": "테마X"})
+    pd.DataFrame(rows).to_csv(tmp_path / "scan" / "2026-11-04.csv", index=False)
+    pd.DataFrame([{"theme": "테마X", "score": 55.0, "breadth": 0.5, "value_growth": 0.2, "leader": "에이"}]).to_csv(tmp_path / "scan" / "themes" / "2026-11-04.csv", index=False)
+    out = kr_briefing(str(tmp_path), disclosures=lambda codes: {"000001": [("2026-11-04", "유상증자결정", "－악재성")], "000002": [("2026-11-03", "분기보고서", "")]})
+    assert "기준: 2026-11-04" in out and "테마X" in out and "[관찰 후보" in out and "[선점 후보]" not in out
+    assert "에이(테마X) 점수 70" in out and "유상증자결정 －악재성" in out and "주의 키워드 없음" in out and "씨이(5일 +30%)" in out
+    assert "투자 권유가 아닙니다" in out
+    assert "저장된 훑기 데이터가 아직 없습니다" in kr_briefing(str(tmp_path / "빈곳"))
+
+
+def test_briefing_us_merges_core_and_discovery_universe(monkeypatch):
+    import stock.briefing as b
+    from stock.data import synthetic_market
+    from stock.us_themes import US_DISCOVERY, US_THEMES
+    merged = {**US_THEMES, **US_DISCOVERY}
+    mk = synthetic_market(themes=merged, index="SPX", flow=False, n=300)
+    del mk["COIN"]
+    out = b.us_briefing(mk)
+    total = sum(len(m) for m in merged.values())
+    assert f"분석 {total - 1}/{total}종목" in out and "[돈이 몰린 테마 상위 5]" in out and "못 받은 종목 1개: 코인베이스" in out
+    assert "[전일 등락 — 상승 상위]" in out and "투자 권유가 아닙니다" in out and len(out) <= 3800
