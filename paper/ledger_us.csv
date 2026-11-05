@@ -1,3 +1,5 @@
 ﻿code,name,signal_date,signal_close,score,status,entry_date,entry_px,exit_date,exit_px,ret_net,kospi_ret
 ABBV,애브비,2026-10-30,297.91,66.1,open,2026-11-02,290.38,,,,
 AAPL,애플,2026-10-30,344.63,61.0,open,2026-11-02,342.67,,,,
+MSFT,마이크로소프트,2026-11-04,555.8,72.5,pending,,,,,,
+ISRG,인튜이티브서지컬,2026-11-04,482.1,72.0,pending,,,,,,
