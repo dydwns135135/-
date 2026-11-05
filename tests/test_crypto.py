@@ -1783,3 +1783,45 @@ def test_scalp_bot_rsi_multi_shares_daily_cap_and_max_open():
     b2 = {"X/USDT:USDT": Bad(1.0), "Y/USDT:USDT": _ScalpBroker(float(bars["close"].iloc[-1]))}
     m2 = sb.run_rsi_multi(b2, {k: bars for k in b2}, {}, now, 1000.0, tf_hours=1)
     assert any("[X] ⚠️ 오류" in m for m in m2) and b2["Y/USDT:USDT"].calls[0][0] == "open"
+
+
+def test_limit_scalp_fills_strictly_and_fees_eat_small_targets():
+    import numpy as np
+    import pandas as pd
+    from crypto.limit_scalp import report, simulate_limit_scalp, summarize
+    idx = pd.date_range("2026-01-01", periods=400, freq="min", tz="UTC")
+    # 직전 종가 100 → 이번 봉이 99.9까지 내려갔다 올라가는 톱니 패턴: 매수 체결 후 0.1% 목표가 곧 닿는다
+    c = np.tile([100.0, 100.0, 100.0, 100.0], 100)
+    h = c * 1.003
+    l = c * 0.998
+    df = pd.DataFrame({"open": c, "high": h, "low": l, "close": c}, index=idx)
+    free = simulate_limit_scalp(df, 0.001, 0.0)
+    assert len(free) > 10 and (free["kind"].iloc[:-1] == "목표").all() and abs(free["ret"].iloc[0] - 0.001) < 1e-9   # 마지막 거래만 데이터 끝에서 잘릴 수 있다
+    fee = simulate_limit_scalp(df, 0.001, 0.0025)
+    assert (fee["ret"].iloc[:-1] < 0).all()                                   # 목표 0.1%는 편도 0.25% 수수료에서 전부 손실
+    flat = pd.DataFrame({"open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0}, index=idx)
+    assert simulate_limit_scalp(flat, 0.001, 0.0).empty                       # 가격이 뚫고 지나가지 않으면 체결 없음(엄격 체결)
+    s = summarize(free, 1.0)
+    assert s["n"] == len(free) and s["hit"] > 0.99 and s["final"] > 1
+    assert "수수료 0.25%" in report(df) and "과거 결과가 미래를 보장하지 않습니다" in report(df)
+
+
+def test_grid_sim_realizes_spread_and_shows_unrealized_loss_when_price_falls():
+    import numpy as np
+    import pandas as pd
+    from crypto.limit_scalp import grid_report, simulate_grid
+    idx = pd.date_range("2026-01-01", periods=300, freq="min", tz="UTC")
+    base = 3_450_000.0
+    # 3000원 위아래로 출렁이는 횡보: 칸이 반복해서 사고팔려 확정이익이 쌓인다
+    c = base + 4000 * np.sin(np.arange(300) / 3.0)
+    flat = pd.DataFrame({"open": c, "high": c + 500, "low": c - 500, "close": c}, index=idx)
+    r0 = simulate_grid(flat, 0.0, step=3000, per=300_000, n=10)
+    assert r0["pairs"] > 5 and r0["realized"] > 0 and abs(r0["realized"] / r0["pairs"] - 300_000 / base * 3000 * 1.0) < 5   # 왕복당 약 260원
+    r_fee = simulate_grid(flat, 0.0025, step=3000, per=300_000, n=10)
+    assert r_fee["realized"] < 0                                              # 편도 0.25%면 3000원(0.09%) 간격으로는 확정이익도 손실
+    # 가격이 계속 내려가면 확정이익은 없고 평가손실만 쌓인다
+    d = base - np.arange(300) * 800.0
+    down = pd.DataFrame({"open": d, "high": d + 300, "low": d - 300, "close": d}, index=idx)
+    rd = simulate_grid(down, 0.0, step=3000, per=300_000, n=10)
+    assert rd["held"] == 10 and rd["final"] < 0 and rd["worst"] <= rd["final"]
+    assert "평가손익 포함" in grid_report(flat) and "과거 결과가 미래를 보장하지 않습니다" in grid_report(flat)
