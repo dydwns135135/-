@@ -134,10 +134,36 @@ def _dart_titles(codes, days=7):
     return out
 
 
+def _global_lines(market, themes) -> list[str]:
+    """미국 밖 해외(일본·홍콩·중국)와 국가 ETF 요약. 종목마다 마지막으로 완성된 봉 기준이다."""
+    from stock.analyze import analyze_themes
+    avail = {t: {c: n for c, n in m.items() if c in market} for t, m in themes.items()}
+    avail = {t: m for t, m in avail.items() if m}
+    names = {c: n for m in themes.values() for c, n in m.items()}
+    total = sum(len(m) for m in themes.values())
+    if not avail:
+        return ["\n[해외(미국 외)] 데이터를 받지 못했습니다."]
+    t, s = analyze_themes(market, avail)
+    lines = [f"\n[해외(미국 외) — 일본·홍콩·중국·국가 ETF] 분석 {len(s)}/{total}종목"]
+    for i, r in t.head(3).iterrows():
+        lines.append(f"{i + 1}. {r['theme']} · 점수 {r['score']:.0f} · 강세 {r['breadth']:.0%} · 거래대금 {r['value_growth']:+.0%} · 대장 {r['leader']}")
+    etf = s[s["theme"] == "국가·지역 ETF"].sort_values("ret20", ascending=False)
+    if len(etf):
+        lines.append("[국가별 흐름(ETF, 20일 순)] " + ", ".join(f"{r['name'].replace(' ETF', '')} {r['ret5']:+.1%}/{r['ret20']:+.1%}" for _, r in etf.iterrows()) + "  (5일/20일)")
+    cand = s[(s["stage"] == "선점 후보") & (s["theme"] != "국가·지역 ETF")].head(3)
+    for _, r in cand.iterrows():
+        lines.append(f"- 관찰 후보 {r['name']}({r['theme']}) 점수 {r['score']:.0f} · 20일 {r['ret20']:+.1%} · 거래량 x{r['vol_ratio']:.1f}")
+    got = set(s["code"])
+    miss = [n for c, n in names.items() if c not in got]
+    if miss:
+        lines.append(f"※ 못 받은 종목 {len(miss)}개: " + ", ".join(miss[:10]))
+    return lines
+
+
 def us_briefing(market, path: str | None = None, log=print) -> str:
-    """market = load_yahoo 결과(SPX 포함). 기본 목록과 확장 목록을 합쳐 분석한다."""
+    """market = load_yahoo 결과(SPX 포함). 미국 기본 목록과 확장 목록을 합쳐 분석하고, 해외(미국 외) 요약을 덧붙인다."""
     from stock.analyze import analyze_themes, market_regime
-    from stock.us_themes import US_DISCOVERY, US_THEMES, US_WATCHLIST
+    from stock.us_themes import GLOBAL_THEMES, US_DISCOVERY, US_THEMES, US_WATCHLIST
     themes_map = {**US_THEMES, **US_DISCOVERY}
     t, s = analyze_themes(market, themes_map)
     reg = market_regime(market["SPX"])
@@ -145,7 +171,7 @@ def us_briefing(market, path: str | None = None, log=print) -> str:
     last = idx.index[-1]
     got = sum(len(m) for m in themes_map.values())
     have = len(s)
-    lines = [f"📋 미국 브리핑 — 기준: {last:%Y-%m-%d} 미국장 마감 (분석 {have}/{got}종목)",
+    lines = [f"📋 해외 브리핑(미국 + 일본·홍콩·중국·국가 ETF) — 기준: {last:%Y-%m-%d} 미국장 마감 (분석 {have}/{got}종목)",
              f"[시황] {reg['label']} · S&P500 20일 {reg['ret20']:+.1%} · 전일 {idx.iloc[-1] / idx.iloc[-2] - 1:+.1%}"]
     lines.append("\n[돈이 몰린 테마 상위 5]")
     for i, r in t.head(5).iterrows():
@@ -175,6 +201,7 @@ def us_briefing(market, path: str | None = None, log=print) -> str:
     missing = [names[c] for c in names if c not in set(s["code"])]
     if missing:
         lines.append(f"\n※ 못 받은 종목 {len(missing)}개: " + ", ".join(missing[:8]))
+    lines += _global_lines(market, GLOBAL_THEMES)
     if path:
         pl = _paper_lines(path)
         if pl:
@@ -183,12 +210,25 @@ def us_briefing(market, path: str | None = None, log=print) -> str:
     return _fit("\n".join(lines))
 
 
-def run_us(path: str | None, log=print) -> str:
+def trim_by_market(market: dict) -> dict:
+    """종목의 거래소(티커 접미사)에 맞는 현지 시간대로 장이 끝나기 전 오늘 봉을 버린다: 일본 16시, 홍콩 17시, 그 밖(미국) 동부 17시 이전이면 오늘 봉 제외."""
     from stock.paper import trim_partial
-    from stock.us_themes import US_DISCOVERY, US_THEMES
+    zones = {".T": ("Asia/Tokyo", 16), ".HK": ("Asia/Hong_Kong", 17)}
+    groups: dict = {}
+    for k, df in market.items():
+        z = next((v for suf, v in zones.items() if k.endswith(suf)), ("America/New_York", 17))
+        groups.setdefault(z, {})[k] = df
+    out = {}
+    for (tz, hour), g in groups.items():
+        out.update(trim_partial(g, tz, hour))
+    return out
+
+
+def run_us(path: str | None, log=print) -> str:
+    from stock.us_themes import GLOBAL_THEMES, US_DISCOVERY, US_THEMES
     from stock.yahoo import load_yahoo
-    codes = sorted({c for m in {**US_THEMES, **US_DISCOVERY}.values() for c in m})
-    market = trim_partial(load_yahoo(codes, delay=0.5, log=lambda m: None), "America/New_York", 17)
+    codes = sorted({c for m in {**US_THEMES, **US_DISCOVERY, **GLOBAL_THEMES}.values() for c in m})
+    market = trim_by_market(load_yahoo(codes, delay=0.5, log=lambda m: None))
     return us_briefing(market, path, log)
 
 

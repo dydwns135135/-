@@ -1055,11 +1055,26 @@ def test_briefing_kr_reads_scan_and_flags_disclosures(tmp_path):
 def test_briefing_us_merges_core_and_discovery_universe(monkeypatch):
     import stock.briefing as b
     from stock.data import synthetic_market
-    from stock.us_themes import US_DISCOVERY, US_THEMES
+    from stock.us_themes import GLOBAL_THEMES, US_DISCOVERY, US_THEMES
     merged = {**US_THEMES, **US_DISCOVERY}
-    mk = synthetic_market(themes=merged, index="SPX", flow=False, n=300)
-    del mk["COIN"]
+    mk = synthetic_market(themes={**merged, **GLOBAL_THEMES}, index="SPX", flow=False, n=300)
+    del mk["COIN"], mk["0700.HK"]
     out = b.us_briefing(mk)
     total = sum(len(m) for m in merged.values())
+    gtotal = sum(len(m) for m in GLOBAL_THEMES.values())
     assert f"분석 {total - 1}/{total}종목" in out and "[돈이 몰린 테마 상위 5]" in out and "못 받은 종목 1개: 코인베이스" in out
+    assert f"분석 {gtotal - 1}/{gtotal}종목" in out and "[국가별 흐름(ETF, 20일 순)]" in out and "못 받은 종목 1개: 텐센트" in out
+    assert "일본 " in out and "해외 브리핑(미국 + 일본·홍콩·중국·국가 ETF)" in out
     assert "[전일 등락 — 상승 상위]" in out and "투자 권유가 아닙니다" in out and len(out) <= 3800
+
+
+def test_briefing_trim_by_market_uses_each_exchange_timezone(monkeypatch):
+    import pandas as pd
+    import stock.briefing as b
+    import stock.paper as pp
+    days = pd.bdate_range("2026-11-02", periods=3)
+    df = pd.DataFrame({"open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0}, index=days)
+    seen = {}
+    monkeypatch.setattr(pp, "trim_partial", lambda g, tz, hour, now=None: seen.update({tz: (sorted(g), hour)}) or g)
+    b.trim_by_market({"AAPL": df, "SPX": df, "7203.T": df, "0700.HK": df})
+    assert seen["America/New_York"] == (["AAPL", "SPX"], 17) and seen["Asia/Tokyo"] == (["7203.T"], 16) and seen["Asia/Hong_Kong"] == (["0700.HK"], 17)
