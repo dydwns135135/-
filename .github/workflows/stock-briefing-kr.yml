@@ -1,0 +1,34 @@
+name: "stock-briefing-kr (국내 아침 브리핑: 어제 훑기에서 알아서 찾은 테마·후보·공시 → 텔레그램)"
+
+# 목표 시각은 한국 08:30. GitHub 스케줄은 보통 몇십 분, 드물게 몇 시간 늦게 시작하므로 여유를 두고 07:40 에 예약한다. 주문 없음.
+# stock-data 브랜치의 어제 훑기 결과(scan/)와 모의투자 장부를 읽고, 후보·관심 종목의 최근 7일 공시(DART)를 붙인다.
+# 스케줄은 저장소 변수 STOCK_ENABLED=true 일 때만 동작(수동 실행은 항상 가능).
+on:
+  schedule:
+    - cron: "40 22 * * 0-4"   # UTC 22:40 일~목 = 한국 07:40 월~금
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-stock.txt
+      - run: pip install -r requirements-stock.txt
+
+      - name: Brief
+        env:
+          ENABLED: ${{ vars.STOCK_ENABLED }}
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$ENABLED" != "true" ]; then echo "STOCK_ENABLED!=true, 건너뜀"; exit 0; fi
+          git fetch origin stock-data
+          git worktree add ../data FETCH_HEAD
+          python -m stock.briefing kr ../data --telegram
