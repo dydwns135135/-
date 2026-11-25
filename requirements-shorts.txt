@@ -1,0 +1,4 @@
+yt-dlp
+faster-whisper      # Apple Silicon 맥은 대신: mlx-whisper
+opencv-python-headless  # 선택: 한 사람 얼굴 추적 크롭(없으면 블러 배경 맞춤)
+pytest
